@@ -1,0 +1,13 @@
+{
+  "CALENDAR_ID": "primary",
+  "SA_JSON_PATH": "C:/path/to/service_account.json",
+
+  "CHECKFRONT_HOST": "your-company.checkfront.com",
+  "CF_API_KEY_PATH": "C:/secrets/checkfront_key.txt",
+  "CF_API_SECRET_PATH": "C:/secrets/checkfront_secret.txt",
+  "CF_ACCOUNT_ID": "off",  
+  "CF_STATUS_ID": "PAID",   
+  "CF_COLOR_ID": "7",       
+
+  "TIMEZONE": "Australia/Brisbane"
+}

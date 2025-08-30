@@ -1,0 +1,10 @@
+# =============================
+# requirements.txt
+# =============================
+# Google Calendar API
+google-api-python-client
+google-auth
+# Checkfront sync
+requests
+# Timezones on Windows (zoneinfo fallback)
+tzdata

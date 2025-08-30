@@ -1,0 +1,14 @@
+# =============================
+# .gitignore
+# =============================
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.DS_Store
+Thumbs.db
+# secrets
+service_account.json
+checkfront_key.txt
+checkfront_secret.txt
+config.json
