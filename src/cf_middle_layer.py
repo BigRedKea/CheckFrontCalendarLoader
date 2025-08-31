@@ -49,8 +49,6 @@ class SlotAggregate:
 
 # ---------- Helpers for item events ----------
 
-RFC5545_DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
-
 def _datetime_or_none(v, tz) -> datetime:
     try:
         naive_dt = datetime.strptime(v, "%Y%m%d")
@@ -107,20 +105,9 @@ def _event_applies_to_categories(ev: Dict) -> list[str]:
 def _overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> bool:
     return not (a_end <= b_start or b_end <= a_start)
 
-RFC5545_DAYS = ["MO","TU","WE","TH","FR","SA","SU"]
-
-def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
-    if not s or not isinstance(s, str):
-        return default
-    try:
-        hh, mm = s.split(":")
-        return int(hh), int(mm)
-    except Exception:
-        return default
-
 # ---------------- Item-level recurrence pre-seed (no item events) ----------------
 
-RFC5545_DAYS = ["MO","TU","WE","TH","FR","SA","SU"]
+RFC5545_DAYS = ["mon","tue","wed","thu","fri","sat","sun"]
 
 def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
     if not s or not isinstance(s, str):
@@ -134,89 +121,49 @@ def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
 def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
     """
     Build occurrences for an item based on item-level recurrence fields.
-    Supported item fields:
-      - repeat: "daily" | "weekly" (others treated as one-off/daily span)
-      - repeat_interval: int (default 1)
-      - repeat_byday: ["MO","WE", ...] (weekly only; default all weekdays or base weekday)
-      - repeat_until: epoch seconds (0/None = open-ended)
-      - time_start, time_end: "HH:MM" strings (defaults 08:00–15:00)
-      - start_date (epoch, optional): base date/time to anchor recurrence; if missing, start at window_start
-    Returns list of (start_dt, end_dt) aware datetimes inside [window_start, window_end).
     """
-    reps = (item.get("repeat"))
-    if not reps:
-        return []
-    
-    interval = max(1, int(item.get("repeat_interval") or 1))
-    byday = item.get("repeat_byday")
-    until_s = item.get("repeat_until")
-    hard_until = datetime.fromtimestamp(int(until_s), tz=tz) if until_s not in (None, 0, "0", "") else None
-    limit = min(window_end, hard_until) if hard_until else window_end
+    out: list[tuple[datetime, datetime]] = []
+
+    # Base anchor date
+    base_s = item.get("start_date")
+    base = _datetime_or_none(base_s, tz) if base_s else window_start
+    base_e = item.get("end_date")
+    itemend = _datetime_or_none(base_e, tz) 
 
     # Times-of-day
     sh, sm = _parse_hhmm(item.get("time_start"), default=(8,0))
     eh, em = _parse_hhmm(item.get("time_end"),   default=(15,0))
 
-    # Base anchor date
-    base_s = item.get("start_date")
-    base = datetime.fromtimestamp(int(base_s), tz=tz) if base_s else window_start
-
-    out: list[tuple[datetime, datetime]] = []
-
-    if reps == "weekly":
-        if not byday:
-            # default: base weekday
-            byday = [RFC5545_DAYS[base.weekday()]]
-        # align first occurrence per weekday
-        for wd in byday:
-            if wd not in RFC5545_DAYS:
-                continue
-            target_idx = RFC5545_DAYS.index(wd)
-            # start on the first matching weekday >= window_start
-            first_day = base + timedelta(days=(target_idx - base.weekday()) % 7)
-            # set time window for that day
-            first = first_day.replace(hour=sh, minute=sm, second=0, microsecond=0)
-            if first < window_start:
-                # jump forward in steps of 'interval' weeks
-                delta_days = (window_start - first).days
-                jumps = (delta_days // (7 * interval)) * (7 * interval)
-                first = first + timedelta(days=jumps)
-                while first < window_start:
-                    first += timedelta(weeks=interval)
-            cur = first
-            while cur < limit:
-                end = cur.replace(hour=eh, minute=em, second=0, microsecond=0)
-                if end <= cur:  # ensure positive duration
-                    end = cur + timedelta(hours=1)
-                out.append((cur, end))
-                cur += timedelta(weeks=interval)
-
-    elif reps == "daily":
-        # daily from max(base, window_start), preserving time window
+    reps = (item.get("repeat"))
+    if not reps:
         first = base.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        end = itemend.replace(hour=eh, minute=em, second=0, microsecond=0)
+        out.append((first, end))
+        return out
+
+    # align first occurrence per weekday
+    for wd in reps:
+        if wd not in RFC5545_DAYS:
+            continue
+        target_idx = RFC5545_DAYS.index(wd)
+        # start on the first matching weekday >= window_start
+        first_day = base + timedelta(days=(target_idx - base.weekday()) % 7)
+        # set time window for that day
+        first = first_day.replace(hour=sh, minute=sm, second=0, microsecond=0)
         if first < window_start:
-            delta_days = (window_start.date() - first.date()).days
-            jumps = (delta_days // interval) * interval
+            # jump forward in steps of 'interval' weeks
+            delta_days = (window_start - first).days
+            jumps = (delta_days // (7 )) * (7 )
             first = first + timedelta(days=jumps)
             while first < window_start:
-                first += timedelta(days=interval)
+                first += timedelta(weeks=1)
         cur = first
-        while cur < limit:
+        while cur < window_end:
             end = cur.replace(hour=eh, minute=em, second=0, microsecond=0)
-            if end <= cur:
+            if end <= cur:  # ensure positive duration
                 end = cur + timedelta(hours=1)
             out.append((cur, end))
-            cur += timedelta(days=interval)
-
-    else:
-        # No repeat defined → seed per-day spans for the window (or one daytime slot per day)
-        day = window_start.replace(hour=sh, minute=sm, second=0, microsecond=0)
-        while day < window_end:
-            end = day.replace(hour=eh, minute=em, second=0, microsecond=0)
-            if end <= day:
-                end = day + timedelta(hours=1)
-            out.append((day, end))
-            day += timedelta(days=1)
+            cur += timedelta(weeks=1)
 
     # keep in window
     out = [(s, e) for (s, e) in out if not (e <= window_start or s >= window_end)]
@@ -224,8 +171,6 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
     return out
 
 # ----- Use item-level recurrence for items with NO events -----
-
-
 
 
 def build_slot_aggregates(
@@ -261,6 +206,7 @@ def build_slot_aggregates(
     for u in unavailable_events:
         u_start_s = _datetime_or_none(u.get("start_date"),tz)
         u_end_s = _datetime_or_none(u.get("end_date"),tz)
+        u_end_s =u_end_s.replace(hour=23, minute=59, second=59, microsecond=9999)
 
         if u_start_s is None:
             continue
@@ -268,6 +214,8 @@ def build_slot_aggregates(
         # Treat missing/zero end as open-ended; cap at our window_end
         if not u_end_s or u_end_s == 0:
             u_end_s = int(window_end.timestamp())
+
+        u_end_s =u_end_s.replace(hour=23, minute=59, second=59, microsecond=9999)              
 
         for iid in _event_applies_to_ids(u):
             unavail_by_item.setdefault(iid, []).append((u_start_s, u_end_s))
@@ -281,85 +229,55 @@ def build_slot_aggregates(
 
     # Which item_ids had *any* event reference (available or unavailable)
     events_seen_item_ids: set[str] = set()
+
     for ev in available_events + unavailable_events:
         for iid in _event_applies_to_ids(ev):
             events_seen_item_ids.add(str(iid))
 
-    for _, it in items_by_id.items() :   # throw away the key, keep the dict
-        iid = str(it.get("item_id"))
+    for it in available_events :   # throw away the key, keep the dict
 
-        if it.get('status')=='U':
+        u_start_s = _datetime_or_none(it.get("start_date"),tz)
+        u_end_s = _datetime_or_none(it.get("end_date"),tz)
+
+        if (it.get("start_date") =="0"):
             continue
 
-        sku = it.get("sku")
-        if not sku:
-            continue
+        if (it.get("end_date")!="0"):
+            if (u_end_s < window_start):
+                continue
 
-        total_places = it.get("stock")
+        #total_places = it.get("stock")
         unlimited = bool(it.get("unlimited") == 1)
+        print(it.get("name"))
 
         # expand occurrences from item-level repeat
         occs = _item_occurrences(it, tz, window_start, window_end)
 
-        # apply unavailability (from item events with status 'U') to this item
-        blocks = unavail_by_item.get(iid, [])
+        appliesto =_event_applies_to_ids(it)
+        for iid in appliesto:
+            # apply unavailability (from item events with status 'U') to this item
+            blocks = unavail_by_item.get(iid, [])
 
-        for (s, e) in occs:
-            # skip if blocked by any 'U' window
-            if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in blocks):
-                continue
+            for (s, e) in occs:
+                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in blocks):
+                    continue
 
-            key = (sku, s.date())
-            if key not in buckets:
-                buckets[key] = SlotAggregate(
-                    sku=sku,
-                    start_date=s.date(),
-                    start=s,
-                    end=e,
-                    total_places=int(total_places) if total_places is not None else None,
-                    unlimited=unlimited,
-                )
-            else:
-                if s < buckets[key].start: buckets[key].start = s
-                if e > buckets[key].end:   buckets[key].end   = e
-
-        # for ev in available_events:
-        #     applies_ids = _event_applies_to_ids(ev)
-        #     if not applies_ids:
-        #         continue
-
-        #     dur = _event_duration(ev, tz)
-        #     starts = _expand_event_dates(ev, tz, window_start, window_end)
-
-        # for iid in applies_ids:
-        #     item = items_by_id.get(iid)
-        #     if not item:
-        #         continue
-        #     sku = item.get("sku")
-        #     if not sku:
-        #         continue
-
-        #     total_places = item.get("stock")
-        #     unlimited = item.get("unlimited") == 1
-
-        #     blocks = unavail_by_item.get(iid, [])
-        #     for s in starts:
-        #         e = s + dur
-        #         # skip if any U-block overlaps
-        #         if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in blocks):
-        #             continue
-
-        #         key = (sku, s.date())
-        #         if key not in buckets:
-        #             buckets[key] = SlotAggregate(
-        #                 sku=sku,
-        #                 start_date=s.date(),
-        #                 start=s,
-        #                 end=e,
-        #                 total_places=total_places,
-        #                 unlimited=unlimited,
-        #                 item_event = ev
-        #             )
+                item = items_by_id[iid]
+                sku = item.get("sku")
+                total_places = item.get("stock")
+                key = (sku, s.date())
+                if key not in buckets:
+                    buckets[key] = SlotAggregate(
+                         sku=sku,
+                         start_date=s.date(),
+                         start=s,
+                         end=e,
+                         total_places=int(total_places) if total_places is not None else None,
+                         unlimited=unlimited,
+                     )
+                #else:
+                    #if s < buckets[key].start: buckets[key].start = s
+                    #if e > buckets[key].end:   buckets[key].end   = e
 
 
     # ---------- BOOKINGS ----------
