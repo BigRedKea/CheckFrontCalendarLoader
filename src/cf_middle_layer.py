@@ -130,15 +130,9 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
     base_e = item.get("end_date")
     itemend = _datetime_or_none(base_e, tz) 
 
-    # Times-of-day
-    sh, sm = _parse_hhmm(item.get("time_start"), default=(8,0))
-    eh, em = _parse_hhmm(item.get("time_end"),   default=(15,0))
-
     reps = (item.get("repeat"))
     if not reps:
-        first = base.replace(hour=sh, minute=sm, second=0, microsecond=0)
-        end = itemend.replace(hour=eh, minute=em, second=0, microsecond=0)
-        out.append((first, end))
+        out.append((base, itemend))
         return out
 
     # align first occurrence per weekday
@@ -149,7 +143,7 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
         # start on the first matching weekday >= window_start
         first_day = base + timedelta(days=(target_idx - base.weekday()) % 7)
         # set time window for that day
-        first = first_day.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        first = first_day #.replace(hour=sh, minute=sm, second=0, microsecond=0)
         if first < window_start:
             # jump forward in steps of 'interval' weeks
             delta_days = (window_start - first).days
@@ -159,7 +153,7 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
                 first += timedelta(weeks=1)
         cur = first
         while cur < window_end:
-            end = cur.replace(hour=eh, minute=em, second=0, microsecond=0)
+            end = cur
             if end <= cur:  # ensure positive duration
                 end = cur + timedelta(hours=1)
             out.append((cur, end))
@@ -195,7 +189,6 @@ def build_slot_aggregates(
 
     # ---------- 1) EVENTS ----------
     items_by_id: Dict[str, Dict] = {str(i.get("item_id")): i for i in list(cf.list_items())}
-
     item_events = cf.list_item_events()
     available_events = [e for e in item_events if e.get("enabled") and e.get("status") != "U"]
     unavailable_events = [e for e in item_events if e.get("enabled") and e.get("status") == "U"]
@@ -248,7 +241,6 @@ def build_slot_aggregates(
 
         #total_places = it.get("stock")
         unlimited = bool(it.get("unlimited") == 1)
-        print(it.get("name"))
 
         # expand occurrences from item-level repeat
         occs = _item_occurrences(it, tz, window_start, window_end)
@@ -262,7 +254,10 @@ def build_slot_aggregates(
                 if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in blocks):
                     continue
 
-                item = items_by_id[iid]
+                item = items_by_id.get(iid)
+                if item ==None:
+                    continue # May be an archived Item
+                
                 sku = item.get("sku")
                 total_places = item.get("stock")
                 key = (sku, s.date())
@@ -304,8 +299,8 @@ def build_slot_aggregates(
             if not sku or qty <= 0:
                 continue
 
-            s_ts = itm.get("start_date") or itm.get("start_time")
-            e_ts = itm.get("end_date")   or itm.get("end_time")
+            s_ts = itm.get("start_date")
+            e_ts = itm.get("end_date")
             if s_ts is None or e_ts is None:
                 continue
 
@@ -322,7 +317,7 @@ def build_slot_aggregates(
             unlimited = bool(item_meta.get("unlimited") == 1) if item_meta else False
 
             if key not in buckets:
-                raise Exception("This should have already")
+                print(f"TO FIX {key} should be already in buckets")
                 buckets[key] = SlotAggregate(
                     sku=sku,
                     start_date=start_iso.date(),

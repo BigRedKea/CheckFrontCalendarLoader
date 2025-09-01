@@ -4,6 +4,7 @@
 # =============================
 from __future__ import annotations
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from datetime import date
 from zoneinfo import ZoneInfo
 
 from .cf_client import CFConfig, CheckfrontClient
-from .cf_middle_layer import build_slot_aggregates
+from .cf_middle_layer import build_slot_aggregates, SlotAggregate
 
 def run_middle_layer():
     # Load Checkfront credentials
@@ -51,12 +52,23 @@ def run_middle_layer():
     )
     if (slots != None):
 
-        # Print a quick summary
-        for slot in slots:
-            print(f"{slot.start}–{slot.end} SKU={slot.sku} "
-                f"{slot.total_booked}/{slot.total_places or '∞'}")
-            print(slot.render_description())
-            print("----")
+        # Group by date
+        grouped: dict[date, list[SlotAggregate]] = defaultdict(list)
+        for (sku, d), slot in slots.items():
+            grouped[d].append(slot)
+
+        # Pretty-print
+        for d, slots in sorted(grouped.items()):
+            print(f"\n=== {d} ===")
+            for slot in slots:
+                print(f"  {slot.sku}: {slot.start:%H:%M} "
+                    f"places={slot.total_places}, unlimited={slot.unlimited}, "
+                    f"booked={slot.total_booked}")
 
 if __name__ == "__main__":
     run_middle_layer()
+
+
+        # Times-of-day - decorate the event start end times last not currently uising timeslots
+    #sh, sm = _parse_hhmm(item.get("time_start"), default=(8,0))
+    #eh, em = _parse_hhmm(item.get("time_end"),   default=(15,0))
