@@ -9,6 +9,12 @@ import json
 from pathlib import Path
 
 from .cf_sync import CFToGCalSync, CFConfig
+5
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+from .cf_client import CFConfig, CheckfrontClient
+from .cf_middle_layer import build_slot_aggregates, SlotAggregate
 
 
 def load_text(path: str) -> str:
@@ -23,11 +29,27 @@ def build_cli():
     p.add_argument("--days", dest="days", type=int, default=7, help="Window length in days")
     return p
 
-from datetime import date
-from zoneinfo import ZoneInfo
 
-from .cf_client import CFConfig, CheckfrontClient
-from .cf_middle_layer import build_slot_aggregates, SlotAggregate
+
+def _normalize(value):
+    """Recursively normalize to JSON-safe types."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _normalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize(v) for v in value]
+    return value
+
+
+def sort_json_by_date(json_ready: dict) -> dict:
+    """Return a new dict with keys (YYYY-MM-DD) sorted chronologically."""
+    return {
+        k: json_ready[k]
+        for k in sorted(json_ready.keys(), key=lambda d: date.fromisoformat(d))
+    }
+
+
 
 def run_middle_layer():
     # Load Checkfront credentials
@@ -52,21 +74,104 @@ def run_middle_layer():
     )
     if (slots != None):
 
-        # Group by date
-        grouped: dict[date, list[SlotAggregate]] = defaultdict(list)
-        for (sku, d), slot in slots.items():
-            grouped[d].append(slot)
+        # Usage:
+        json_ready = buckets_to_json_ready(slots)
 
-        # Pretty-print
-        for d, slots in sorted(grouped.items()):
-            print(f"\n=== {d} ===")
-            for slot in slots:
-                print(f"  {slot.sku}: {slot.start:%H:%M} "
-                    f"places={slot.total_places}, unlimited={slot.unlimited}, "
-                    f"booked={slot.total_booked}")
+        # assuming json_ready = buckets_to_json_ready(buckets)
+        sorted_json = sort_json_by_date(json_ready)
+
+        # Pretty print
+        print(json.dumps(sorted_json , indent=2))
+
+        out_path = Path("slots.json")
+
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(sorted_json, f, indent=2, ensure_ascii=False)
+
+
+        print(f" finished ")
+
+        # # Group by date
+        # grouped: dict[date, list[SlotAggregate]] = defaultdict(list)
+        # for (sku, d), slot in slots.items():
+        #     grouped[d].append(slot)
+
+        # # Pretty-print
+        # for d, slots in sorted(grouped.items()):
+        #     print(f"\n=== {d} ===")
+        #     for slot in slots:
+        #         print(f"  {slot.sku}: {slot.start:%H:%M} "
+        #             f"places={slot.total_places}, unlimited={slot.unlimited}, "
+        #             f"booked={slot.total_booked}")
+                
+
+
+# def buckets_to_json_ready(buckets):
+#     grouped = defaultdict(list)
+
+#     for (sku, d), slot in buckets.items():
+#         grouped[str(d)].append(_normalize({
+#             "sku": sku,
+#             "start": slot.start.isoformat(),
+#             "end": slot.end.isoformat() if slot.end else None,
+#             "total_places": slot.total_places,
+#             "unlimited": slot.unlimited,
+#             "total_booked": getattr(slot, "total_booked", None),
+#             "booking_items": slot.booking_items,   # already a list of dicts
+#             "customers": list(slot.customers.values()),  # flatten dict to list
+#         }))
+
+
+
+        
+
+#     # return as normal dict (defaultdict won’t serialize)
+#     return dict(grouped)
+
+def buckets_to_json_ready(buckets):
+    grouped = defaultdict(list)
+
+    for (sku, d), slot in buckets.items():
+        # build booking rows (each keeps its param, just add customer_id)
+        bookings = []
+        for bi in slot.booking_items or []:
+            row = {**bi}  # copy
+            # ensure customer_id is present
+            row["customer_id"] = bi.get("customer_id")
+            bookings.append(_normalize(row))
+
+        # aggregate param totals across all booking_items
+        param_totals: dict[str, int] = {}
+        for bi in slot.booking_items or []:
+            params = bi.get("param") or {}
+            for key, p in params.items():
+                qty = int(p.get("qty") or 0)
+                param_totals[key] = param_totals.get(key, 0) + qty
+
+        # keep customers as a dictionary keyed by customer_id
+        customers = slot.customers if getattr(slot, "customers", None) else {}
+
+        slot_dict = {
+            "sku": sku,
+            "date": str(d),
+            "start": slot.start.isoformat() if slot.start else None,
+            "end": slot.end.isoformat() if slot.end else None,
+            "total_places": slot.total_places,
+            "unlimited": slot.unlimited,
+            "total_booked": getattr(slot, "total_booked", None),
+            "bookings": bookings,          # ✅ renamed
+            "customers": _normalize(customers),  # ✅ dict keyed by customer_id
+            "param_totals": param_totals
+        }
+        grouped[str(d)].append(_normalize(slot_dict))
+
+    return dict(grouped)
+
 
 if __name__ == "__main__":
     run_middle_layer()
+
+
 
 
         # Times-of-day - decorate the event start end times last not currently uising timeslots

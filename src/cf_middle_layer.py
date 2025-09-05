@@ -165,7 +165,16 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
     return out
 
 # ----- Use item-level recurrence for items with NO events -----
-
+def _normalize_value(v):
+    """Convert numeric strings to int/float where possible."""
+    if isinstance(v, str):
+        try:
+            if v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
+                return int(v)
+            return float(v)
+        except Exception:
+            return v  # leave as string if not numeric
+    return v
 
 def build_slot_aggregates(
     *,
@@ -294,6 +303,9 @@ def build_slot_aggregates(
             if not isinstance(itm, dict):
                 continue
 
+            if itm.get('status_id') == 'VOID':
+                continue
+
             sku = itm.get("sku").strip()
             qty = int(itm.get("qty") )
             if not sku or qty <= 0:
@@ -333,7 +345,9 @@ def build_slot_aggregates(
             # if end_iso   > slot.end:   slot.end   = end_iso
 
             # ✅ append the *booking item* (line item) to the slot
-            slot.booking_items.append({
+
+
+            flat = {
                 "booking_id": booking_id,
                 "customer_id": str(cust_id) if cust_id else None,
                 "line_id": str(lineid),
@@ -341,8 +355,15 @@ def build_slot_aggregates(
                 "qty": qty,
                 "start": start_iso,
                 "end": end_iso,
-                "raw": itm,
-            })
+            }
+
+            if isinstance(itm, dict):
+                for k, v in itm.items():
+                    if k not in flat:  # ✅ skip top-level duplicates
+                        flat[k] = _normalize_value(v)
+
+            slot.booking_items.append(flat)
+            
 
             # track customer for this slot (once per customer id)
             if customer:
