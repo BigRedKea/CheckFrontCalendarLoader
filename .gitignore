@@ -12,3 +12,4 @@ service_account.json
 checkfront_key.txt
 checkfront_secret.txt
 config.json
+slots.json

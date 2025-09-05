@@ -159,9 +159,9 @@ def buckets_to_json_ready(buckets):
             "total_places": slot.total_places,
             "unlimited": slot.unlimited,
             "total_booked": getattr(slot, "total_booked", None),
+            "param_totals": param_totals,
             "bookings": bookings,          # ✅ renamed
             "customers": _normalize(customers),  # ✅ dict keyed by customer_id
-            "param_totals": param_totals
         }
         grouped[str(d)].append(_normalize(slot_dict))
 
