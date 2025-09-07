@@ -9,12 +9,13 @@ import json
 from pathlib import Path
 
 from .cf_sync import CFToGCalSync, CFConfig
-5
+
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 from .cf_client import CFConfig, CheckfrontClient
 from .cf_middle_layer import build_slot_aggregates, SlotAggregate
+from pathlib import Path
 
 
 def load_text(path: str) -> str:
@@ -83,7 +84,8 @@ def run_middle_layer():
         # Pretty print
         print(json.dumps(sorted_json , indent=2))
 
-        out_path = Path("slots.json")
+        
+        out_path = Path.cwd() / "output" / "slots.json"
 
         with out_path.open("w", encoding="utf-8") as f:
             json.dump(sorted_json, f, indent=2, ensure_ascii=False)
@@ -128,27 +130,62 @@ def run_middle_layer():
 #     # return as normal dict (defaultdict won’t serialize)
 #     return dict(grouped)
 
-def buckets_to_json_ready(buckets):
+def buckets_to_json_ready(slots):
     grouped = defaultdict(list)
 
-    for (sku, d), slot in buckets.items():
+    #for each slot
+    for (sku, d), slot in slots.items():
         # build booking rows (each keeps its param, just add customer_id)
         bookings = []
+        param_totals: dict[str, int] = {}
+        group_totals: dict[str, dict] = {}
+
         for bi in slot.booking_items or []:
             row = {**bi}  # copy
             # ensure customer_id is present
             row["customer_id"] = bi.get("customer_id")
             bookings.append(_normalize(row))
 
-        # aggregate param totals across all booking_items
-        param_totals: dict[str, int] = {}
-        for bi in slot.booking_items or []:
+            # aggregate param totals across all booking_items
             params = bi.get("param") or {}
             for key, p in params.items():
                 qty = int(p.get("qty") or 0)
                 param_totals[key] = param_totals.get(key, 0) + qty
 
-        # keep customers as a dictionary keyed by customer_id
+            # get the quantuty
+            qty = int(bi.get("qty"))
+
+            # get the customer
+            cid = bi.get("customer_id")
+            cust = (slot.customers or {}).get(cid) if cid else None
+
+            # Pull the scout group from Meta Data
+            meta = (cust or {}).get("meta")
+            grp = (
+                meta.get("scout_group_booking")
+                or "Unknown"
+            )
+            email = (
+                meta.get("your_leaders_email_address") or None
+            )
+
+            #group by the scoutgroup and included supplied leaders email addresses
+            if grp not in group_totals:
+                group_totals[grp] = {"total_qty": 0, "emails": set()}
+
+            group_totals[grp]["total_qty"] += qty
+
+            #add scoutleaders email
+            if email:
+                if not isinstance(group_totals[grp]["emails"], set):
+                    group_totals[grp]["emails"] = set(group_totals[grp]["emails"])
+                group_totals[grp]["emails"].add(email)
+
+        # convert email sets → lists
+        for grp, data in group_totals.items():
+            data["emails"] = sorted(list(data["emails"]))
+
+        # Customers as a dictionary keyed by customer_id
         customers = slot.customers if getattr(slot, "customers", None) else {}
 
         slot_dict = {
@@ -156,12 +193,14 @@ def buckets_to_json_ready(buckets):
             "date": str(d),
             "start": slot.start.isoformat() if slot.start else None,
             "end": slot.end.isoformat() if slot.end else None,
-            "total_places": slot.total_places,
             "unlimited": slot.unlimited,
-            "total_booked": getattr(slot, "total_booked", None),
+            "total_places": slot.total_places,
+            "total_booked": getattr(slot, "total_booked", 0),
+            "available_places": slot.total_places - getattr(slot, "total_booked", 0),
             "param_totals": param_totals,
-            "bookings": bookings,          # ✅ renamed
-            "customers": _normalize(customers),  # ✅ dict keyed by customer_id
+            "group_totals": group_totals,
+            "bookings": bookings,  
+            "customers": _normalize(customers),  
         }
         grouped[str(d)].append(_normalize(slot_dict))
 
