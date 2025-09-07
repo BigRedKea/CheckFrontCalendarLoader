@@ -9,5 +9,14 @@
   "CF_STATUS_ID": "PAID",   
   "CF_COLOR_ID": "7",       
 
-  "TIMEZONE": "Australia/Brisbane"
+  "TIMEZONE": "Australia/Brisbane",
+  "time_rules": {
+    "default_by_category": {
+      "Activities": { "start_hour": 8, "start_minute": 0, "end_hour": 15, "end_minute": 0 },
+      "Accomodation": { "start_hour": 15, "start_minute": 0, "end_hour": 8, "end_minute": 0, "overnight": true }
+    },
+    "sku_overrides": {
+      "brownsea-pizzaandpaddlenight": { "start_hour": 18, "start_minute": 45, "end_hour": 22, "end_minute": 0 }
+    }
+  }
 }

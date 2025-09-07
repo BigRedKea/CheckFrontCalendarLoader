@@ -1,12 +1,19 @@
 # src/middle_layer.py
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 from datetime import datetime, date, timedelta
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 from collections import defaultdict
+import json
+from datetime import timedelta
+
 from .cf_client import CheckfrontClient
 from .helpers import _datetime_or_none, _normalize_value, _normalize
+
+with open("config.json", "r") as f:
+    CONFIG = json.load(f)
 
 # ---------- Data Model ----------
 
@@ -16,18 +23,7 @@ class Customer:
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
-    group: Optional[str] = None  # e.g., custom field like "Scout Group"
-
-@dataclass(frozen=True)
-class Booking:
-    code: str
-    start: datetime
-    end: datetime
-    sku: Optional[str]
-    quantity: int
-    status_id: Optional[str] = None
-    status_name: Optional[str] = None
-    customer_id: Optional[str] = None
+    group: Optional[str] = None  # e.g., "Scout Group"
 
 @dataclass
 class SlotAggregate:
@@ -40,16 +36,12 @@ class SlotAggregate:
     unlimited: bool = False
     color_id: Optional[str] = None
     item: Optional[dict] = None
+
     booking_items: list[dict] = field(default_factory=list)
     customers: Dict[str, Customer] = field(default_factory=dict)
     item_event: list[dict] = field(default_factory=list)
 
-
-    #@property
-    #def total_booked(self) -> int:
-    #    return sum(int(it.get("qty", 0)) for it in self.booking_items)
-
-# ---------- Helpers for item events ----------
+# ---------- small Helpers for item events ----------
 
 
 
@@ -116,20 +108,18 @@ def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
         return default
 
 def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
-    """
-    Build occurrences for an item based on item-level recurrence fields.
-    """
+    #Build occurrences for an item based on item-level recurrence fields.
     out: list[tuple[datetime, datetime]] = []
 
     # Base anchor date
     base_s = item.get("start_date")
-    base = _datetime_or_none(base_s, tz) if base_s else window_start
+    s = _datetime_or_none(base_s, tz) if base_s else window_start
     base_e = item.get("end_date")
     itemend = _datetime_or_none(base_e, tz) 
 
     reps = (item.get("repeat"))
     if not reps:
-        out.append((base, itemend))
+        out.append((s, itemend))
         return out
 
     # align first occurrence per weekday
@@ -138,7 +128,7 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
             continue
         target_idx = RFC5545_DAYS.index(wd)
         # start on the first matching weekday >= window_start
-        first_day = base + timedelta(days=(target_idx - base.weekday()) % 7)
+        first_day = s + timedelta(days=(target_idx - s.weekday()) % 7)
         # set time window for that day
         first = first_day #.replace(hour=sh, minute=sm, second=0, microsecond=0)
         if first < window_start:
@@ -151,56 +141,22 @@ def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_e
         cur = first
         while cur < window_end:
             end = cur
-            if end <= cur:  # ensure positive duration
-                end = cur + timedelta(hours=1)
             out.append((cur, end))
             cur += timedelta(weeks=1)
 
-    # keep in window
-    out = [(s, e) for (s, e) in out if not (e <= window_start or s >= window_end)]
     out.sort(key=lambda se: se[0])
     return out
 
-def _item_daily_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
-    """
-    Build daily occurrences for an item.
-    """
+def _item_daily_occurrences(window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
+    #Build daily occurrences for an item.
     out: list[tuple[datetime, datetime]] = []
 
-    base_s = item.get("start_date")
-    first = _datetime_or_none(base_s, tz) if base_s else window_start
-    base_e = item.get("end_date")
-    end = _datetime_or_none(base_e, tz) if base_s else window_start
-
-    cur = first
+    cur = window_start
     while cur < window_end:
         end = cur
-        if end <= cur:  
-            end = cur + timedelta(hours=1)
         out.append((cur, end))
         cur += timedelta(days=1)
 
-    # align first occurrence per weekday
-    # for wd in reps:
-    #     if wd not in RFC5545_DAYS:
-    #         continue
-    #     target_idx = RFC5545_DAYS.index(wd)
-    #     # start on the first matching weekday >= window_start
-    #     first_day = base + timedelta(days=(target_idx - base.weekday()) % 7)
-    #     # set time window for that day
-    #     first = first_day #.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    #     if first < window_start:
-    #         # jump forward in steps of 'interval' weeks
-    #         delta_days = (window_start - first).days
-    #         jumps = (delta_days // (7 )) * (7 )
-    #         first = first + timedelta(days=jumps)
-    #         while first < window_start:
-    #             first += timedelta(weeks=1)
-    #     cur = first
-
-
-    # keep in window
-    out = [(s, e) for (s, e) in out if not (e <= window_start or s >= window_end)]
     out.sort(key=lambda se: se[0])
     return out
 
@@ -220,8 +176,6 @@ def build_buckets(
       3) Customers: fetch and attach customer info only for IDs referenced by bookings
     """
 
-
-    
     item_events = cf.list_item_events()
     available_events = [e for e in item_events if e.get("enabled") and e.get("status") != "U"]
     unavailable_events = [e for e in item_events if e.get("enabled") and e.get("status") == "U"]
@@ -257,8 +211,6 @@ def build_buckets(
     # Which item_ids had *any* event reference (available or unavailable)
     events_seen_item_ids: set[str] = set()
 
-
-
     for ev in available_events + unavailable_events:
         for applies_to_item_id in _event_applies_to_ids(ev):
             events_seen_item_ids.add(str(applies_to_item_id))
@@ -285,13 +237,19 @@ def build_buckets(
             # apply unavailability (from item events with status 'U') to this item
 
             item = items_by_id.get(applies_to_item_id)
+
             if item ==None:
                 continue # May be an archived Item
 
-            notavailableblock = unavail_by_item.get(applies_to_item_id, [])
+            itemcategory = item.get("category")
+
+            notavailableitem = unavail_by_item.get(applies_to_item_id, [])
+            notavailablecategory = unavail_by_category.get(itemcategory, [])
 
             for (s, e) in occs:
-                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailableblock):
+                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailableitem):
+                    continue
+                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailablecategory):
                     continue
   
                 sku = item.get("sku")
@@ -318,13 +276,16 @@ def build_buckets(
             if item ==None:
                 continue # May be an archived Item
 
-            occs = _item_daily_occurrences(item, tz, window_start, window_end)
+            occs = _item_daily_occurrences(window_start, window_end)
             # apply unavailability (from item events with status 'U') to this item
             
-            notavailableblock = unavail_by_item.get(applies_to_item_id, [])
+            notavailableitem = unavail_by_item.get(applies_to_item_id, [])
+            notavailablecategory = unavail_by_category.get(itemcategory, [])
 
             for (s, e) in occs:
-                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailableblock):
+                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailableitem):
+                    continue
+                if any(_overlaps(s, e, ub_s, ub_e) for (ub_s, ub_e) in notavailablecategory):
                     continue
 
                 sku = item.get("sku")
@@ -369,7 +330,7 @@ def extract_checkfront_data(
     # ---------- BOOKINGS ----------
     bookings = list(cf.list_bookings_index(
         start_date=window_start,
-        end_date=window_end #.date().isoformat()
+        end_date=window_end 
     ))
 
     for booking in bookings:
@@ -402,49 +363,48 @@ def extract_checkfront_data(
             if booking_end_iso <= window_start or booking_start_iso >= window_end:
                 continue
 
-            key = (sku, booking_start_iso.date())
+            occs = _item_daily_occurrences(booking_start_iso, booking_end_iso)
 
-            if key not in buckets:
-                print(f"TO FIX {key} should be already in buckets")
-                item = items_by_sku[sku]
-                buckets[key] = SlotAggregate(
-                    sku=sku,
-                    start_date=booking_start_iso.date(),
-                    start=booking_start_iso,
-                    end=booking_end_iso,
-                    item= item
-                )
-            slot = buckets[key]
-
-            flat = {
-                "booking_id": booking_id,
-                "customer_id": str(customer_id) if customer_id else None,
-                "line_id": str(bookinglineid),
-                "sku": sku,
-                "qty": qty,
-                "start": booking_start_iso,
-                "end": booking_end_iso
-            }
-
-            if isinstance(booking_item, dict):
-                for k, v in booking_item.items():
-                    if k not in flat:
-                        flat[k] = _normalize_value(v)
-
-            slot.booking_items.append(flat)
+            for (occurance_start, occurance_end) in occs:
             
-            # track customer for this slot (once per customer id)
-            if customer:
-                cid = customer.get("id") or str(customer_id)
-                if cid:
-                    slot.customers[cid] = customer
+                key = (sku, occurance_start.date())
+
+                if key not in buckets:
+                    print(f"Adding {key} to new bucket")
+                    item = items_by_sku[sku]
+                    buckets[key] = SlotAggregate(
+                        sku=sku,
+                        start_date=occurance_start.date(),
+                        start=occurance_start,
+                        end=occurance_end,
+                        item= item
+                    )
+                slot = buckets[key]
+
+                flat_booking = {
+                    "booking_id": booking_id,
+                    "customer_id": str(customer_id) if customer_id else None,
+                    "line_id": str(bookinglineid),
+                    "sku": sku,
+                    "qty": qty,
+                    "start": occurance_start,
+                    "end": occurance_end
+                }
+
+                if isinstance(booking_item, dict):
+                    for k, v in booking_item.items():
+                        if k not in flat_booking:
+                            flat_booking[k] = _normalize_value(v)
+
+                slot.booking_items.append(flat_booking)
+                
+                # track customer for this slot (once per customer id)
+                if customer:
+                    cid = customer.get("id") or str(customer_id)
+                    if cid:
+                        slot.customers[cid] = customer
 
     return  slots_to_json_ready(buckets)
-    #return []
-
-    # Times-of-day - decorate the event start end times last not currently uising timeslots
-    #sh, sm = _parse_hhmm(item.get("time_start"), default=(8,0))
-    #eh, em = _parse_hhmm(item.get("time_end"),   default=(15,0))
 
 
 def slots_to_json_ready(slots):
@@ -456,11 +416,10 @@ def slots_to_json_ready(slots):
         bookings = []
         param_totals: dict[str, int] = {}
         group_totals: dict[str, dict] = {}
-        item = slot.item
-        #item_meta = next((it for it in items_by_id.values() if it.get("sku") == sku), None)
 
-        total_places = item.get("stock") 
-        unlimited = bool(item.get("unlimited") == 1) 
+        total_places = slot.item.get("stock") 
+        unlimited = bool(slot.item.get("unlimited") == 1) 
+        total_booked = 0
 
         for bi in slot.booking_items or []:
             row = {**bi}  # copy
@@ -476,6 +435,8 @@ def slots_to_json_ready(slots):
 
             # get the quantuty
             qty = int(bi.get("qty"))
+
+            total_booked += qty
 
             # get the customer
             cid = bi.get("customer_id")
@@ -510,26 +471,72 @@ def slots_to_json_ready(slots):
         # Customers as a dictionary keyed by customer_id
         customers = slot.customers if getattr(slot, "customers", None) else {}
 
+        flattened_tags = [t["name"] for t in slot.item.get("tags")]
 
+        apply_time_rule(slot)
 
         slot_dict = {
             "sku": sku,
             "date": str(d),
             "start": slot.start.isoformat() if slot.start else None,
             "end": slot.end.isoformat() if slot.end else None,
-            "unlimited": slot.unlimited,
+            "unlimited": unlimited,
             "total_places": total_places,
-            "total_booked": getattr(slot, "total_booked", 0),
-            "available_places": total_places - getattr(slot, "total_booked", 0),
+            "total_booked": total_booked,
+            "available_places": total_places - total_booked,
             "param_totals": param_totals,
             "group_totals": group_totals,
+            "tags": flattened_tags,
+            "item": slot.item,
             "bookings": bookings,  
             "customers": _normalize(customers),  
         }
         grouped[str(d)].append(_normalize(slot_dict))
 
-    """Return a new dict with keys (YYYY-MM-DD) sorted chronologically."""
+    #Return a new dict with keys (YYYY-MM-DD) sorted chronologically.
     return {
         k: grouped[k]
         for k in sorted(grouped.keys(), key=lambda d: date.fromisoformat(d))
     }
+
+
+def _apply_times(dt, h, m):
+    return dt.replace(hour=h, minute=m, second=0, microsecond=0)
+
+def _get_rule_for(slot):
+    item = getattr(slot, "item", {}) or {}
+    category = (item.get("category") or "").strip()
+    sku = (item.get("sku") or "").strip()
+
+    rules = CONFIG["time_rules"]
+    # SKU override wins if present (exact, case-insensitive)
+    if sku:
+        for key, rule in rules["sku_overrides"].items():
+            if key.lower() == sku.lower():
+                return rule
+
+    # Otherwise fall back to category default
+    return rules["default_by_category"].get(category)
+
+def apply_time_rule(slot):
+    """
+    slot.start and slot.end must be datetime objects.
+    slot.item must have at least: {"category": "...", "sku": "..."} (sku optional).
+    """
+    rule = _get_rule_for(slot)
+    if not rule:
+        return slot  # no change if nothing matches
+
+    slot.start = _apply_times(slot.start, rule["start_hour"], rule.get("start_minute", 0))
+    slot.end   = _apply_times(slot.end,   rule["end_hour"],   rule.get("end_minute", 0))
+
+    # Handle overnight (end next day)
+    if rule.get("overnight"):
+        if slot.end <= slot.start:
+            slot.end += timedelta(days=1)
+    else:
+        # If a same-day rule accidentally crosses midnight, normalize
+        if slot.end <= slot.start:
+            slot.end += timedelta(days=1)
+
+    return slot
