@@ -198,31 +198,22 @@ def upsert_event_by_key(
         res = svc.events().insert(calendarId=calendar_id, body=body).execute()
         return {"calendar_id": calendar_id, "event_id": res.get("id"), "htmlLink": res.get("htmlLink"), "mode": "insert"}
 
-def push_booking_by_tags(svc, cfg: Dict, booking: Dict, tags: List[Dict]):
-    """
-    booking = {
-      "code": str, "title": str, "start": datetime, "end": datetime,
-      "location": Optional[str], "description": Optional[str],
-      "booked": int, "capacity": Optional[int]
-    }
-    tags = [{'name': 'Cub'}, ...] or ['Cub', ...]
-    """
+def push_calendarevent_by_tags(svc, cfg: Dict, calendar_event: Dict, tags: List[Dict]):
+
     tzid = os.environ.get("TZID") or cfg.get("timezone") or "Australia/Brisbane"
     defaults = cfg.get("event_defaults", {}) or {}
 
-
-
     tag_names   = tags
     calendars   = _resolve_calendars_for_tags(tag_names, cfg)
-    code        = str(booking["code"])
-    title       = booking.get("title") or f"Booking {code}"
-    description = booking.get("description") or ""
-    location    = booking.get("location") or defaults.get("location")
+    code        = str(calendar_event["code"])
+    title       = calendar_event.get("title") or f"Booking {code}"
+    description = calendar_event.get("description") or ""
+    location    = calendar_event.get("location") or defaults.get("location")
     reminders   = defaults.get("reminders")
-    start_dt    = booking["start"]
-    end_dt      = booking["end"]
-    booked      = int(booking.get("booked", 0))
-    capacity    = booking.get("capacity")
+    start_dt    = calendar_event["start"]
+    end_dt      = calendar_event["end"]
+    booked      = int(calendar_event.get("booked", 0))
+    capacity    = calendar_event.get("capacity")
     capacity    = int(capacity) if capacity is not None else None
     color_id    = _choose_color_id(booked, capacity)
 

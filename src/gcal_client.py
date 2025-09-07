@@ -69,14 +69,17 @@ class GCalClient:
             if not key:
                 self.service.events().insert(calendarId=self.calendar_id, body=body).execute()
                 inserted += 1
+                print(f"inserted {body.get("description")}")
                 continue
             if key in by_key:
                 ev_id = by_key[key]["id"]
                 self.service.events().update(calendarId=self.calendar_id, eventId=ev_id, body=body).execute()
+                print(f"updated{body.get("description")}")
                 updated += 1
             else:
                 self.service.events().insert(calendarId=self.calendar_id, body=body).execute()
                 inserted += 1
+                print(f"inserted {body.get("description")}")
         return inserted, updated
 
     def delete_range(self, start_dt: datetime, end_dt: datetime, *, filter_sync_prefix: Optional[str] = None) -> int:

@@ -1,8 +1,10 @@
 from typing import Dict, List, Tuple
 from datetime import datetime
-from .gcal_sync import push_booking_by_tags
+from .gcal_sync import push_calendarevent_by_tags
 from .cf_middle_layer import SlotAggregate
 from .helpers import _to_datetime
+import json
+
 
 # We assume you already have:
 # from yourmodule.time_rules import apply_time_rules_if_missing
@@ -17,14 +19,18 @@ def slot_to_booking_and_tags(slot: Dict, tz) -> Tuple[Dict, List[Dict]]:
 
     if start == None or end == None:
         return None, None
+    description =  f"available {slot.get('available_places')} = total {slot.get('total_places')} - booked {slot.get('total_booked')}" + '\n\n'
 
-    booking = {
+    description += json.dumps(slot.get('param_totals'), indent=2)+ '\n\n'
+    description += json.dumps(slot.get('group_totals'), indent=2)
+
+    checkfront_event = {
         "code": f"{slot.get('sku')}_{_to_datetime(start).strftime("%Y_%M_%d_%H_%m")}",
         "title": slot.get("item", {}).get("name"),
         "start": start,
         "end": end,
         "location": "", #slot.get("location"),
-        "description": "",#slot.get("notes"),
+        "description": description,
         "sku": slot.get("sku"),
         "booked": int(slot.get("total_booked")),
         "capacity": int(slot.get("total_places"))
@@ -34,7 +40,7 @@ def slot_to_booking_and_tags(slot: Dict, tz) -> Tuple[Dict, List[Dict]]:
     raw_tags = slot.get("tags", [])
     #tags = [{"name": t if isinstance(t, str) else t["name"]} for t in raw_tags]
 
-    return booking, raw_tags
+    return checkfront_event, raw_tags
 
 
 def push_slots_to_calendars(svc, cfg: Dict, slots: Dict[datetime, List[Dict]], tz) -> List[Dict]:
@@ -46,5 +52,5 @@ def push_slots_to_calendars(svc, cfg: Dict, slots: Dict[datetime, List[Dict]], t
             booking, tags = slot_to_booking_and_tags(item, tz)
             if booking == None:
                 continue
-            results.extend(push_booking_by_tags(svc, cfg, booking, tags))
+            results.extend(push_calendarevent_by_tags(svc, cfg, booking, tags))
     return results

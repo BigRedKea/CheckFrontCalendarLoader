@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 
 import json
-#from genson import SchemaBuilder
 from pathlib import Path
 
 from .cf_sync import CFConfig
@@ -45,7 +44,7 @@ def run_middle_layer():
         # --- Get slots from Checkfront ---
     tz = timezone(timedelta(hours=10))  # AEST (adjust if needed)
     start_date = "2025-09-07"           # example, set dynamically
-    days = 7                            # how many days ahead
+    days = 14                            # how many days ahead
 
     # Call the builder
     slots = extract_checkfront_data(
@@ -77,12 +76,6 @@ def run_middle_layer():
     print(f"Pushed {len(results)} events")
     for r in results:
         print(f"- {r['calendar_id']} -> {r['htmlLink']}")
-
-    # builder = SchemaBuilder()
-    # builder.add_object(slots)
-    # schema = builder.to_schema()
-
-    #print(json.dumps(schema, indent=2))
 
     print(f" finished ")
 

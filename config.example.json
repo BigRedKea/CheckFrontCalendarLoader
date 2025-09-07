@@ -19,4 +19,32 @@
       "brownsea-pizzaandpaddlenight": { "start_hour": 18, "start_minute": 45, "end_hour": 22, "end_minute": 0 }
     }
   }
+  ,
+    "calendars": {
+      "activity calendar": {
+        "calendarid":"d2@group.calendar.google.com",
+        "tags": ["Sailing", "Canoeing"]
+      },
+      "joey calendar": {
+        "calendarid":"42@group.calendar.google.com",
+        "tags": ["Joey"]
+      },
+      "cub calendar": {
+        "calendarid":"92@group.calendar.google.com",
+        "tags": ["Venturer"]
+      },
+        "scout calendar": {
+        "calendarid":"92@group.calendar.google.com",
+        "tags": ["Scout"]
+      },
+        "venturer calendar": {
+        "calendarid":"02@group.calendar.google.com",
+        "tags": ["Venturer"]
+      },
+        "rover calendar": {
+        "calendarid":"d3@group.calendar.google.com",
+        "tags": ["Rover"]
+      }
+
+  }
 }
