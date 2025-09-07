@@ -8,3 +8,5 @@ google-auth
 requests
 # Timezones on Windows (zoneinfo fallback)
 tzdata
+# schema generation
+gensen
