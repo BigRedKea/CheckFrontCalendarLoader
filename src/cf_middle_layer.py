@@ -44,14 +44,13 @@ class SlotAggregate:
 # ---------- small Helpers for item events ----------
 
 
-
-def _event_duration(ev: Dict, tz: ZoneInfo) -> timedelta:
-    """Duration = base end - base start (fall back to 3h)."""
-    s = _datetime_or_none(ev.get("start_date"),tz)
-    e = _datetime_or_none(ev.get("end_date"),tz)
-    if s is not None and e is not None and e > s:
-        return e - s
-    return timedelta(hours=3)
+# def _event_duration(ev: Dict, tz: ZoneInfo) -> timedelta:
+#     """Duration = base end - base start (fall back to 3h)."""
+#     s = _datetime_or_none(ev.get("start_date"),tz)
+#     e = _datetime_or_none(ev.get("end_date"),tz)
+#     if s is not None and e is not None and e > s:
+#         return e - s
+#     return timedelta(hours=3)
 
 def _event_applies_to_ids(ev: Dict) -> list[str]:
     """
@@ -98,14 +97,14 @@ def _overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: date
 
 RFC5545_DAYS = ["mon","tue","wed","thu","fri","sat","sun"]
 
-def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
-    if not s or not isinstance(s, str):
-        return default
-    try:
-        hh, mm = s.split(":")
-        return int(hh), int(mm)
-    except Exception:
-        return default
+# def _parse_hhmm(s: str, default=(8,0)) -> tuple[int,int]:
+#     if not s or not isinstance(s, str):
+#         return default
+#     try:
+#         hh, mm = s.split(":")
+#         return int(hh), int(mm)
+#     except Exception:
+#         return default
 
 def _item_occurrences(item: dict, tz: ZoneInfo, window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
     #Build occurrences for an item based on item-level recurrence fields.
@@ -159,7 +158,6 @@ def _item_daily_occurrences(window_start: datetime, window_end: datetime) -> lis
 
     out.sort(key=lambda se: se[0])
     return out
-
 
 def build_buckets(
     *,
@@ -303,6 +301,16 @@ def build_buckets(
                      )
     return buckets
 
+# def _flatten_tags(tags: List[Dict]) -> List[str]:
+#     """Accept [{'name':'Cub'}, ...] or ['Cub', ...] and return ['Cub', ...]."""
+#     out: List[str] = []
+#     for t in tags or []:
+#         if isinstance(t, dict) and isinstance(t.get("name"), str):
+#             out.append(t["name"].strip())
+#         elif isinstance(t, str):
+#             out.append(t.strip())
+#     return out
+
 def extract_checkfront_data(
     *,
     cf: CheckfrontClient,
@@ -408,96 +416,193 @@ def extract_checkfront_data(
 
 
 def slots_to_json_ready(slots):
-    grouped = defaultdict(list)
+    """
+    Input:
+      slots: dict keyed by (sku, date) -> slot object
+    Output:
+      flat: list of normalized slot dicts (one per (sku, date)), sorted by start
+    """
+    flat = []
 
-    #for each slot
     for (sku, d), slot in slots.items():
-        # build booking rows (each keeps its param, just add customer_id)
         bookings = []
         param_totals: dict[str, int] = {}
         group_totals: dict[str, dict] = {}
 
-        total_places = slot.item.get("stock") 
-        unlimited = bool(slot.item.get("unlimited") == 1) 
+        total_places = slot.item.get("stock")
+        unlimited = bool(slot.item.get("unlimited") == 1)
         total_booked = 0
 
-        for bi in slot.booking_items or []:
-            row = {**bi}  # copy
-            # ensure customer_id is present
+        for bi in (slot.booking_items or []):
+            row = {**bi}
             row["customer_id"] = bi.get("customer_id")
             bookings.append(_normalize(row))
 
-            # aggregate param totals across all booking_items
+            # aggregate param totals
             params = bi.get("param") or {}
             for key, p in params.items():
                 qty = int(p.get("qty") or 0)
                 param_totals[key] = param_totals.get(key, 0) + qty
 
-            # get the quantuty
-            qty = int(bi.get("qty"))
-
+            # quantity
+            qty = int(bi.get("qty") or 0)
             total_booked += qty
 
-            # get the customer
+            # customer & meta
             cid = bi.get("customer_id")
             cust = (slot.customers or {}).get(cid) if cid else None
+            meta = (cust or {}).get("meta") or {}
 
-            # Pull the scout group from Meta Data
-            meta = (cust or {}).get("meta")
-            grp = (
-                meta.get("scout_group_booking")
-                or "Unknown"
-            )
-            email = (
-                meta.get("your_leaders_email_address") or None
-            )
+            grp = meta.get("scout_group_booking") or "Unknown"
+            email = meta.get("your_leaders_email_address") or None
 
-            #group by the scoutgroup and included supplied leaders email addresses
             if grp not in group_totals:
                 group_totals[grp] = {"total_qty": 0, "emails": set()}
-
             group_totals[grp]["total_qty"] += qty
-
-            #add scoutleaders email
             if email:
-                if not isinstance(group_totals[grp]["emails"], set):
-                    group_totals[grp]["emails"] = set(group_totals[grp]["emails"])
                 group_totals[grp]["emails"].add(email)
 
         # convert email sets → lists
         for grp, data in group_totals.items():
             data["emails"] = sorted(list(data["emails"]))
 
-        # Customers as a dictionary keyed by customer_id
         customers = slot.customers if getattr(slot, "customers", None) else {}
 
-        flattened_tags = [t["name"] for t in slot.item.get("tags")]
+        # robust tag flattening (accept dicts or strings)
+        raw_tags = (slot.item or {}).get("tags") or []
+        flattened_tags = []
+        for t in raw_tags:
+            if isinstance(t, dict) and "name" in t and isinstance(t["name"], str):
+                flattened_tags.append(t["name"])
+            elif isinstance(t, str):
+                flattened_tags.append(t)
 
+        # ensure times are set
         apply_time_rule(slot)
+        start_iso = slot.start.isoformat() if slot.start else None
+        end_iso   = slot.end.isoformat() if slot.end else None
+
+        # available places (respect unlimited)
+        available_places = None if unlimited else (int(total_places or 0) - int(total_booked or 0))
 
         slot_dict = {
             "sku": sku,
             "date": str(d),
-            "start": slot.start.isoformat() if slot.start else None,
-            "end": slot.end.isoformat() if slot.end else None,
+            "start": start_iso,
+            "end": end_iso,
             "unlimited": unlimited,
             "total_places": total_places,
             "total_booked": total_booked,
-            "available_places": total_places - total_booked,
+            "available_places": available_places,
             "param_totals": param_totals,
             "group_totals": group_totals,
             "tags": flattened_tags,
             "item": slot.item,
-            "bookings": bookings,  
-            "customers": _normalize(customers),  
+            "bookings": bookings,
+            "customers": _normalize(customers),
         }
-        grouped[str(d)].append(_normalize(slot_dict))
 
-    #Return a new dict with keys (YYYY-MM-DD) sorted chronologically.
-    return {
-        k: grouped[k]
-        for k in sorted(grouped.keys(), key=lambda d: date.fromisoformat(d))
-    }
+        flat.append(_normalize(slot_dict))
+
+    # sort the flat list chronologically by start
+    flat.sort(key=lambda s: (s.get("start") or ""))
+
+    return flat
+
+# def slots_to_json_ready(slots):
+#     grouped = defaultdict(list)
+
+#     #for each slot
+#     for (sku, d), slot in slots.items():
+#         # build booking rows (each keeps its param, just add customer_id)
+#         bookings = []
+#         param_totals: dict[str, int] = {}
+#         group_totals: dict[str, dict] = {}
+
+#         total_places = slot.item.get("stock") 
+#         unlimited = bool(slot.item.get("unlimited") == 1) 
+#         total_booked = 0
+
+#         for bi in slot.booking_items or []:
+#             row = {**bi}  # copy
+#             # ensure customer_id is present
+#             row["customer_id"] = bi.get("customer_id")
+#             bookings.append(_normalize(row))
+
+#             # aggregate param totals across all booking_items
+#             params = bi.get("param") or {}
+#             for key, p in params.items():
+#                 qty = int(p.get("qty") or 0)
+#                 param_totals[key] = param_totals.get(key, 0) + qty
+
+#             # get the quantuty
+#             qty = int(bi.get("qty"))
+
+#             total_booked += qty
+
+#             # get the customer
+#             cid = bi.get("customer_id")
+#             cust = (slot.customers or {}).get(cid) if cid else None
+
+#             # Pull the scout group from Meta Data
+#             meta = (cust or {}).get("meta")
+#             grp = (
+#                 meta.get("scout_group_booking")
+#                 or "Unknown"
+#             )
+#             email = (
+#                 meta.get("your_leaders_email_address") or None
+#             )
+
+#             #group by the scoutgroup and included supplied leaders email addresses
+#             if grp not in group_totals:
+#                 group_totals[grp] = {"total_qty": 0, "emails": set()}
+
+#             group_totals[grp]["total_qty"] += qty
+
+#             #add scoutleaders email
+#             if email:
+#                 if not isinstance(group_totals[grp]["emails"], set):
+#                     group_totals[grp]["emails"] = set(group_totals[grp]["emails"])
+#                 group_totals[grp]["emails"].add(email)
+
+#         # convert email sets → lists
+#         for grp, data in group_totals.items():
+#             data["emails"] = sorted(list(data["emails"]))
+
+#         # Customers as a dictionary keyed by customer_id
+#         customers = slot.customers if getattr(slot, "customers", None) else {}
+
+#         flattened_tags = [t["name"] for t in slot.item.get("tags")]
+
+#         apply_time_rule(slot)
+
+#         slot_dict = {
+#             "sku": sku,
+#             "date": str(d),
+#             "start": slot.start.isoformat() if slot.start else None,
+#             "end": slot.end.isoformat() if slot.end else None,
+#             "unlimited": unlimited,
+#             "total_places": total_places,
+#             "total_booked": total_booked,
+#             "available_places": total_places - total_booked,
+#             "param_totals": param_totals,
+#             "group_totals": group_totals,
+#             "tags": flattened_tags,
+#             "item": slot.item,
+#             "bookings": bookings,  
+#             "customers": _normalize(customers),  
+#         }
+
+#         grouped[str(d)].append(_normalize(slot_dict))
+
+#     #Return a new dict with keys (YYYY-MM-DD) sorted chronologically.
+#     return {
+#         k: grouped[k]
+#         for k in sorted(grouped.keys(), key=lambda d: date.fromisoformat(d))
+#     }
+
+
 
 
 def _apply_times(dt, h, m):

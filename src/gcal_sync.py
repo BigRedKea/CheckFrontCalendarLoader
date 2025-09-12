@@ -1,5 +1,5 @@
 # gcal_sync.py
-import os, hashlib, base64, re
+#import os, hashlib, base64, re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -21,15 +21,7 @@ def get_calendar_service(sa_json_path: str):
 #     h = hashlib.sha1(key.encode("utf-8")).digest()
 #     return base64.b32encode(h).decode("ascii").strip("=").lower()[:50]
 
-def _flatten_tags(tags: List[Dict]) -> List[str]:
-    """Accept [{'name':'Cub'}, ...] or ['Cub', ...] and return ['Cub', ...]."""
-    out: List[str] = []
-    for t in tags or []:
-        if isinstance(t, dict) and isinstance(t.get("name"), str):
-            out.append(t["name"].strip())
-        elif isinstance(t, str):
-            out.append(t.strip())
-    return out
+
 
 def _choose_color_id(booked: int, capacity: Optional[int]) -> Optional[str]:
     if capacity is None: return None
@@ -145,6 +137,81 @@ def find_event_by_key(
     items = resp.get("items", [])
     return items[0] if items else None
 
+def _norm_event_view(e: dict) -> dict:
+    """
+    Extract only the fields we manage from an existing Google Calendar event.
+    Normalises values so that comparisons are reliable.
+    """
+    if not e:
+        return {}
+
+    v = {
+        "summary": (e.get("summary") or "").strip(),
+        "description": (e.get("description") or "").rstrip(),
+        "location": e.get("location") or None,
+        "colorId": e.get("colorId") or None,
+        "start": {
+            "dateTime": (e.get("start") or {}).get("dateTime"),
+            "timeZone": (e.get("start") or {}).get("timeZone"),
+        },
+        "end": {
+            "dateTime": (e.get("end") or {}).get("dateTime"),
+            "timeZone": (e.get("end") or {}).get("timeZone"),
+        },
+        "reminders": e.get("reminders") or None,
+        "extendedProperties": {
+            "private": (e.get("extendedProperties") or {}).get("private") or {}
+        },
+        "attendees": None,
+    }
+
+    # Normalise attendees to sorted list of lower-cased emails (ignoring RSVP status)
+    if e.get("attendees"):
+        addrs = sorted({(a.get("email") or "").lower()
+                        for a in e["attendees"] if a.get("email")})
+        v["attendees"] = [{"email": a} for a in addrs] if addrs else None
+
+    return v
+
+def _norm_body_view(b: dict) -> dict:
+    """
+    Apply the same normalisation to a desired event body as we do to a live event.
+    This lets us compare apples to apples.
+    """
+    return _norm_event_view(b)
+
+def _diff_for_patch(current_view: dict, desired_view: dict) -> dict:
+    """
+    Compare normalised current vs desired event views and return a patch dict
+    containing only the fields that differ.  Returns {} if nothing changed.
+    """
+    patch = {}
+
+    # Simple top-level scalar fields
+    for key in ("summary", "description", "location", "colorId", "reminders"):
+        if current_view.get(key) != desired_view.get(key):
+            patch[key] = desired_view.get(key)
+
+    # Start/end objects
+    for key in ("start", "end"):
+        if (current_view.get(key) or {}) != (desired_view.get(key) or {}):
+            patch[key] = desired_view.get(key)
+
+    # Extended private properties
+    cur_priv = (current_view.get("extendedProperties") or {}).get("private")
+    des_priv = (desired_view.get("extendedProperties") or {}).get("private")
+    if cur_priv != des_priv:
+        patch["extendedProperties"] = {"private": des_priv or {}}
+
+    # Attendees (normalised list of {email})
+    if current_view.get("attendees") != desired_view.get("attendees"):
+        patch["attendees"] = desired_view.get("attendees")
+
+    # Avoid sending nulls unless you explicitly want to clear those fields
+    return {k: v for k, v in patch.items() if v is not None}
+
+
+
 # =========================
 # Upsert by key (no custom event.id on insert)
 # =========================
@@ -167,6 +234,7 @@ def upsert_event_by_key(
     - If found → PATCH (preserves attendees/RSVPs and other untouched fields).
     - If not found → INSERT (let Google assign event.id).
     """
+
     # Always ensure our key is present
     private_props = dict(private_props or {})
     private_props["event_key"] = event_key
@@ -192,21 +260,46 @@ def upsert_event_by_key(
 
     if existing:
         eid = existing["id"]
-        res = svc.events().patch(calendarId=calendar_id, eventId=eid, body=body).execute()
-        return {"calendar_id": calendar_id, "event_id": eid, "htmlLink": res.get("htmlLink"), "mode": "patch"}
+        current_view = _norm_event_view(existing)
+        desired_view = _norm_body_view(body)
+        patch = _diff_for_patch(current_view, desired_view)
+
+        if patch:
+            print(f"Patching {start_dt} {summary}")
+            res = svc.events().patch(
+                calendarId=calendar_id,
+                eventId=eid,
+                body=patch,            # only send changed fields
+                sendUpdates="none"     # or "all" if you want attendee emails
+            ).execute()
+            return {
+                "calendar_id": calendar_id,
+                "event_id": eid,
+                "htmlLink": res.get("htmlLink"),
+                "mode": "patch"
+            }
+        else:
+            print(f"No changes for {start_dt} {summary}")
+            return {
+                "calendar_id": calendar_id,
+                "event_id": eid,
+                "htmlLink": existing.get("htmlLink"),
+                "mode": "unchanged"
+            }
     else:
+        print (f"Inserting {start_dt} {summary}")
         res = svc.events().insert(calendarId=calendar_id, body=body).execute()
         return {"calendar_id": calendar_id, "event_id": res.get("id"), "htmlLink": res.get("htmlLink"), "mode": "insert"}
 
 def push_calendarevent_by_tags(svc, cfg: Dict, calendar_event: Dict, tags: List[Dict]):
 
-    tzid = os.environ.get("TZID") or cfg.get("timezone") or "Australia/Brisbane"
+    tzid = cfg.get("TIMEZONE")
     defaults = cfg.get("event_defaults", {}) or {}
 
     tag_names   = tags
     calendars   = _resolve_calendars_for_tags(tag_names, cfg)
     code        = str(calendar_event["code"])
-    title       = calendar_event.get("title") or f"Booking {code}"
+    title       = calendar_event.get("title")
     description = calendar_event.get("description") or ""
     location    = calendar_event.get("location") or defaults.get("location")
     reminders   = defaults.get("reminders")

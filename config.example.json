@@ -20,31 +20,36 @@
     }
   }
   ,
-    "calendars": {
-      "activity calendar": {
+    "calendars": [{
+        "name":"activity calendar",
         "calendarid":"d2@group.calendar.google.com",
         "tags": ["Sailing", "Canoeing"]
       },
-      "joey calendar": {
+      {
+        "name":"joey calendar",
         "calendarid":"42@group.calendar.google.com",
         "tags": ["Joey"]
       },
-      "cub calendar": {
+      {
+        "name":"cub calendar",
         "calendarid":"92@group.calendar.google.com",
         "tags": ["Venturer"]
       },
-        "scout calendar": {
+      {
+        "name":"scout calendar",
         "calendarid":"92@group.calendar.google.com",
         "tags": ["Scout"]
       },
-        "venturer calendar": {
+      {
+        "name":"venturer calendar",
         "calendarid":"02@group.calendar.google.com",
         "tags": ["Venturer"]
       },
-        "rover calendar": {
+      {
+        "name":"rover calendar",
         "calendarid":"d3@group.calendar.google.com",
         "tags": ["Rover"]
       }
-
-  }
+    ]
 }
+
