@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .cf_client import CheckfrontClient, CFConfig
-from .gcal_client import GCalClient, event_body_from_cf, rrule_weekly, exdate_list
+from .gcal_client import GCalClient, event_body_from_cf,  exdate_list, rrule_weekly
 
 WEEKDAY_CODES = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 

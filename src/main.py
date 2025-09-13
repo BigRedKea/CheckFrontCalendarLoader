@@ -72,12 +72,7 @@ def run_middle_layer():
     # --- Push to calendars ---
     results = push_slots_to_calendars(svc, cfg, slots, tz)
 
-    # --- Report ---
-    print(f"Pushed {len(results)} events")
-    for r in results:
-        print(f"- {r['calendar_id']} -> {r['htmlLink']}")
-
-    print(f" finished ")
+    print(f" Finished ")
 
 
 if __name__ == "__main__":
