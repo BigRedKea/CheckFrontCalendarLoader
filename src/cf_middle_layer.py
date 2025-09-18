@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
 from datetime import timedelta
+from .adapters import _to_datetime
 
 from .cf_client import CheckfrontClient
 from .helpers import _datetime_or_none, _normalize_value, _normalize
@@ -28,6 +29,7 @@ class Customer:
 @dataclass
 class SlotAggregate:
     """A calendar 'slot' aggregate per (SKU, start_date)."""
+    event_id: str
     sku: str
     start_date: date
     start: datetime
@@ -35,8 +37,7 @@ class SlotAggregate:
     total_places: Optional[int] = None
     unlimited: bool = False
     color_id: Optional[str] = None
-    item: Optional[dict] = None
-
+    item: Optional[dict] = None  
     booking_items: list[dict] = field(default_factory=list)
     customers: Dict[str, Customer] = field(default_factory=dict)
     item_event: list[dict] = field(default_factory=list)
@@ -255,6 +256,7 @@ def build_buckets(
                 key = (sku, s.date())
                 if key not in buckets:
                     buckets[key] = SlotAggregate(
+                        event_id = f"{sku}_{_to_datetime(s).strftime("%Y_%m_%d_%H_%M")}",
                          sku=sku,
                          start_date=s.date(),
                          start=s,
@@ -291,6 +293,7 @@ def build_buckets(
                 key = (sku, s.date())
                 if key not in buckets:
                     buckets[key] = SlotAggregate(
+                        event_id = f"{sku}_{_to_datetime(s).strftime("%Y_%m_%d_%H_%M")}",
                          sku=sku,
                          start_date=s.date(),
                          start=s,
@@ -385,7 +388,8 @@ def extract_checkfront_data(
                         start_date=occurance_start.date(),
                         start=occurance_start,
                         end=occurance_end,
-                        item= item
+                        item= item,
+                        event_id = f"{slot.get('sku')}_{_to_datetime(slot.get("start")).strftime("%Y_%m_%d_%H_%M")}"
                     )
                 slot = buckets[key]
 
@@ -491,6 +495,7 @@ def slots_to_json_ready(slots):
             "start": start_iso,
             "end": end_iso,
             "unlimited": unlimited,
+            "event_id": slot.event_id,
             "total_places": total_places,
             "total_booked": total_booked,
             "available_places": available_places,
