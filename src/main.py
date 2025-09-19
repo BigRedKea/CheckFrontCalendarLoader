@@ -6,6 +6,7 @@ import argparse
 
 import json
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 from .cf_sync import CFConfig
 
@@ -15,8 +16,10 @@ from zoneinfo import ZoneInfo
 from .cf_client import CFConfig, CheckfrontClient
 from .cf_middle_layer import extract_checkfront_data, SlotAggregate
 from .gcal_sync import get_calendar_service
-from .adapters import push_slots_to_calendars
+from .gcal_client import sync_calendar
+from .adapters import  filter_slots_for_calendar
 
+from .booking_to_calendar import slots_to_calendar_events_for, resolve_calendars_for_tags
 
 def build_cli():
     p = argparse.ArgumentParser(description="Sync Checkfront bookings to Google Calendar")
@@ -40,11 +43,10 @@ def run_middle_layer():
 
     # Choose start + days
     start_date = date.today().isoformat()
-    #days = 356
         # --- Get slots from Checkfront ---
     tz = timezone(timedelta(hours=10))  # AEST (adjust if needed)
     start_date = "2025-09-07"           # example, set dynamically
-    days = 14                            # how many days ahead
+    days = 365                            # how many days ahead
 
     # Call the builder
     slots = extract_checkfront_data(
@@ -53,6 +55,9 @@ def run_middle_layer():
         start_date_str=start_date,
         days=days
     )
+
+    
+
      
     out_path = Path.cwd() / "output" / "slots.json"
 
@@ -70,9 +75,61 @@ def run_middle_layer():
     svc = get_calendar_service(sa_path)
 
     # --- Push to calendars ---
-    results = push_slots_to_calendars(svc, cfg, slots, tz)
+    results = push_slots_to_calendars(svc, cfg, slots, tz, days)
 
     print(f" Finished ")
+
+
+
+def push_slots_to_calendars(svc, cfg: Dict, slots: List[Dict], tz ,days) -> List[Dict]:
+    """Push all slots to calendars using calendar-centric config."""
+    results: List[Dict] = []
+
+    # for dt, slot in slots.items():
+    #     for item in slot:
+    #         booking, tags = slot_to_booking_and_tags(item, tz)
+    #         if booking == None:
+    #             continue
+    #         results.extend(push_calendarevent_by_tags(svc, cfg, booking, tags))
+    # return results
+
+    # Time window for sync
+    tz = timezone(timedelta(hours=10))        # or from cfg["timezone"]
+    tmin = datetime.now(tz) - timedelta(days=1)
+    tmax = datetime.now(tz) + timedelta(days=days)
+    tzid = cfg["TIMEZONE"]
+
+
+    for cal in cfg.get("calendars"):
+
+        #slots_for_calendar = filter_slots_for_calendar(slots, cal, cfg)
+        
+        cal_id = cal["calendarid"]
+
+        slots_for_cal = [
+            s for s in slots
+            if cal_id in resolve_calendars_for_tags(s.get("tags", []), cfg)
+        ]
+        if not slots_for_cal:
+            continue
+
+        bookings_for_cal = slots_to_calendar_events_for(cal_id, slots_for_cal, cfg, tz)
+        print(f"Updating {cal.get("name")}")
+
+        summary = sync_calendar(
+            svc=svc,
+            cfg=cfg,
+            calendar_id=cal_id,
+            bookings_for_cal=bookings_for_cal,
+            time_min=tmin,
+            time_max=tmax,
+            tzid=cfg.get("timezone", "Australia/Brisbane"),
+            send_updates="none",
+            delete_orphans=True,
+        )
+
+        print(f"{cal['name']}: +{summary['inserted']} ~{summary['patched']} = "
+            f"{summary['unchanged']} -{summary['deleted']}")
 
 
 if __name__ == "__main__":

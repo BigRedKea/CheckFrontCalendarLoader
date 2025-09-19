@@ -4,13 +4,16 @@
 from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
+from .adapters import _to_datetime
 
 import os
+import re, hashlib, base64
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
 
+SAFE_RE = re.compile(r"[^a-z0-9_-]")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 # Simple color choices (1..11). Adjust as you like.
@@ -57,49 +60,6 @@ class GCalClient:
     def clear(self):
         self.service.calendars().clear(calendarId=self.calendar_id).execute()
 
-    # --------- upsert / delete range ---------
-    def upsert(self, event_bodies: Iterable[Dict[str, Any]], *, time_min: Optional[datetime] = None, time_max: Optional[datetime] = None) -> Tuple[int, int]:
-        existing = self.list_all_events(time_min=time_min, time_max=time_max, show_deleted=False)
-        by_key: Dict[str, Dict[str, Any]] = {}
-        for ev in existing:
-            key = ev.get("extendedProperties", {}).get("private", {}).get("syncKey")
-            if key:
-                by_key[key] = ev
-        inserted = updated = 0
-        for body in event_bodies:
-            key = body.get("extendedProperties", {}).get("private", {}).get("syncKey")
-            if not key:
-                self.service.events().insert(calendarId=self.calendar_id, body=body).execute()
-                inserted += 1
-                print(f"inserted {body.get("description")}")
-                continue
-            if key in by_key:
-                ev_id = by_key[key]["id"]
-                self.service.events().update(calendarId=self.calendar_id, eventId=ev_id, body=body).execute()
-                print(f"updated{body.get("description")}")
-                updated += 1
-            else:
-                self.service.events().insert(calendarId=self.calendar_id, body=body).execute()
-                inserted += 1
-                print(f"inserted {body.get("description")}")
-        return inserted, updated
-
-    def delete_range(self, start_dt: datetime, end_dt: datetime, *, filter_sync_prefix: Optional[str] = None) -> int:
-        to_delete = self.list_all_events(time_min=start_dt, time_max=end_dt, show_deleted=False)
-        deleted = 0
-        for ev in to_delete:
-            if filter_sync_prefix:
-                key = ev.get("extendedProperties", {}).get("private", {}).get("syncKey", "")
-                if not isinstance(key, str) or not key.startswith(filter_sync_prefix):
-                    continue
-            try:
-                self.service.events().delete(calendarId=self.calendar_id, eventId=ev["id"]).execute()
-                deleted += 1
-            except HttpError as e:
-                if not (getattr(e, "resp", None) and e.resp.status == 404):
-                    raise
-        return deleted
-
 
 #---------- Event body builder for Checkfront ----------
 
@@ -128,6 +88,80 @@ def event_body_from_cf(
         body["description"] = description
     return body
 
+from datetime import datetime
+from typing import Dict, List, Tuple, Any
+
+# Assumes you have a fetch that pulls ONLY events you manage (e.g. source=checkfront-sync)
+# and within the time window:
+# fetch_existing_managed(svc, calendar_id, time_min, time_max) -> List[dict]
+
+#def _updated(ev: dict) -> datetime:
+#    # RFC3339 -> datetime
+#   return datetime.fromisoformat(ev.get("updated"))
+
+def _start(ev: dict) -> datetime:
+    return ev.get("start")
+
+def _event_key(ev: dict) -> str | None:
+    return ((ev.get("extendedProperties") or {}).get("private") or {}).get("event_key")
+
+def clean_and_bucket_existing(
+    svc,
+    calendar_id: str,
+    time_min: datetime,
+    time_max: datetime,
+    tzid: str,
+    send_updates: str = "none",
+) -> Tuple[Dict[str, dict], Dict[str, int], List[Dict[str, Any]]]:
+    """
+    - Deletes events with no extendedProperties.private.event_key
+    - For duplicate keys: keeps one survivor, deletes others
+    Returns: (existing_map, stats, results)
+      existing_map: {event_key: survivor_event}
+      stats: {"deleted_no_key": int, "deleted_duplicates": int}
+      results: list of action logs
+    """
+    # 1) Fetch events we manage (e.g., with privateExtendedProperty="source=checkfront-sync")
+    existing_list: List[dict] = fetch_existing_synced_events(svc, calendar_id, time_min, time_max, tzid)
+
+
+    deleted_no_key = 0
+    deleted_dupes = 0
+    results: List[Dict[str, Any]] = []
+
+    # 2) First pass: delete events with NO event_key
+    keyed_events: List[dict] = []
+    for ev in existing_list.values():
+        k = _event_key(ev)
+        if not k:
+            # delete & log
+            ev_id = ev.get("id")
+            if ev_id:
+                svc.events().delete(calendarId=calendar_id, eventId=ev_id, sendUpdates=send_updates).execute()
+                deleted_no_key += 1
+                results.append({"status": "deleted_no_key", "event_id": ev_id})
+            continue
+        keyed_events.append(ev)
+
+    # 3) Group remaining events by key
+    buckets: Dict[str, List[dict]] = {}
+    for ev in keyed_events:
+        k = _event_key(ev)  # guaranteed non-empty now
+        buckets.setdefault(k, []).append(ev)
+
+    # 4) Choose one survivor per key (earliest start) and delete the others
+    existing_map: Dict[str, dict] = {}
+    for k, evs in buckets.items():
+        survivor = evs[0]   # keep the earliest start event
+        existing_map[k] = survivor
+
+        for ev in (e for e in evs if e is not survivor and e.get("id")):
+            svc.events().delete(calendarId=calendar_id, eventId=ev["id"], sendUpdates=send_updates).execute()
+            deleted_dupes += 1
+            results.append({"status": "deleted_duplicate", "event_key": k, "event_id": ev["id"]})
+
+    stats = {"deleted_no_key": deleted_no_key, "deleted_duplicates": deleted_dupes}
+    return existing_map, stats, results
 
 
 def exdate_list(*, start_dt: datetime, until_dt: datetime, byday: int, have_dates: set) -> List[str]:
@@ -146,7 +180,7 @@ def exdate_list(*, start_dt: datetime, until_dt: datetime, byday: int, have_date
         cur += timedelta(days=7)
     return out
 
-def fetch_existing_synced_events(svc, calendar_id: str, time_min: datetime, time_max: datetime) -> Dict[str, dict]:
+def fetch_existing_synced_events(svc, calendar_id: str, time_min: datetime, time_max: datetime, tzid) -> Dict[str, dict]:
     """Return {eventId: normalized_event} for events we own (source=checkfront-sync) in [time_min, time_max]."""
     events_by_id: Dict[str, dict] = {}
     page_token = None
@@ -163,75 +197,143 @@ def fetch_existing_synced_events(svc, calendar_id: str, time_min: datetime, time
         )
         resp = req.execute()
         for ev in resp.get("items", []):
-            events_by_id[ev["id"]] = _norm_event_view(ev)
+            events_by_id[ev["id"]] = _norm_event_view(ev, tzid)
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
     return events_by_id
 
+from datetime import datetime
+from typing import Dict, List, Tuple
+from googleapiclient.errors import HttpError
+
+# assumes you already have these helpers:
+# - fetch_existing_synced_events(svc, calendar_id, time_min, time_max)
+# - _norm_body_view(...)
+# - _norm_event_view(...)
+# - _diff_for_patch(...)
+
+def fetch_existing_by_key(svc, calendar_id: str, tmin, tmax) -> dict[str, dict]:
+    """Return {event_key: full_event} for all events we manage (source=checkfront-sync) in the window."""
+    out, token = {}, None
+    while True:
+        resp = svc.events().list(
+            calendarId=calendar_id,
+            privateExtendedProperty="source=checkfront-sync",
+            timeMin=tmin.isoformat(),
+            timeMax=tmax.isoformat(),
+            singleEvents=True,
+            showDeleted=False,
+            maxResults=2500,
+            pageToken=token,
+        ).execute()
+        for ev in resp.get("items", []):
+            priv = ((ev.get("extendedProperties") or {}).get("private") or {})
+            k = priv.get("event_key")
+            if k:
+                out[k] = ev
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return out
+
+def _start_of_body(body: dict) -> datetime:
+    return datetime.fromisoformat(body["start"]["dateTime"])
+
+def _start_of_event(ev: dict) -> datetime:
+    return datetime.fromisoformat(ev["start"]["dateTime"])
+
 def sync_calendar(
     svc,
-    cfg: Dict,
+    cfg,
     calendar_id: str,
-    # bookings_for_cal: iterable of tuples (event_id, desired_body)
-    slots: {str,[]},
-    time_min: datetime,
-    time_max: datetime,
-    send_updates: str = "none",   # "none" | "all"
-    delete_orphans: bool = True
-) -> Dict:
-    """
-    bookings_for_cal items are already mapped to this calendar_id and include:
-      - event_id: stable per-calendar (e.g. _eid(f"{code}:{calendar_id}"))
-      - desired_body: from _desired_body(...)
-    """
-    existing_map = fetch_existing_synced_events(svc, calendar_id, time_min, time_max)
+    bookings_for_cal: list[tuple[str, dict]],  # [(event_key, desired_body)], desired_body includes extendedProperties.private.event_key
+    time_min,
+    time_max,
+    tzid,
+    send_updates: str = "none",
+    delete_orphans: bool = True,
 
-    inserted = 0
-    patched  = 0
-    unchanged = 0
-    deleted = 0
+):
+    
+    filtered_bookings: List[Tuple[str, dict]] = []
+    for key, body in bookings_for_cal:
+        start_dt = body.get("start", {}).get("dateTime")
+        end_dt   = body.get("end", {}).get("dateTime")
+        if not (start_dt and end_dt):
+            continue
+        start = datetime.fromisoformat(start_dt)
+        end   = datetime.fromisoformat(end_dt)
+        # keep if event overlaps [time_min, time_max]
+        if end >= time_min and start <= time_max:
+            filtered_bookings.append((key, body))
+
+    # --- sort filtered bookings deterministically ---
+    filtered_bookings.sort(key=lambda kv: (_start_of_body(kv[1]), kv[0]))
+    
+
+
+    existing, clean_stats, clean_logs = clean_and_bucket_existing(
+        svc=svc,
+        calendar_id=calendar_id,
+        time_min=time_min,
+        time_max=time_max,
+        tzid = tzid,
+        send_updates=send_updates,
+    )
+
+
+    
+    # Map existing events we manage by their event_key
+    existing = fetch_existing_by_key(svc, calendar_id, time_min, time_max)
+
+    inserted = patched = unchanged = deleted = 0
     results = []
 
-    # ---- Upsert pass
-    for event_id, desired in slots:
-        desired_view = _norm_body_view(desired)
-        current_view = existing_map.get(event_id)
-        if current_view is None:
-            # INSERT (with fixed id)
-            body = dict(desired)
-            body["id"] = event_id
-            try:
-                res = svc.events().insert(calendarId=calendar_id, body=body, sendUpdates=send_updates).execute()
-                inserted += 1
-                results.append({"event_id": event_id, "status": "inserted", "htmlLink": res.get("htmlLink")})
-            except HttpError as e:
-                # If someone created it concurrently, PATCH instead
-                if getattr(e.resp, "status", None) == 409:
-                    res = svc.events().patch(calendarId=calendar_id, eventId=event_id, body=desired, sendUpdates=send_updates).execute()
-                    patched += 1
-                    results.append({"event_id": event_id, "status": "patched", "htmlLink": res.get("htmlLink")})
-                else:
-                    raise
+    # Upsert pass
+    active_keys = set()
+    for event_key, desired in filtered_bookings:
+        active_keys.add(event_key)
+        current = existing.get(event_key)
+        desired_view = _norm_body_view(desired, tzid)
+
+        if current is None:
+            # INSERT (no custom 'id'; rely on event_key in extendedProperties)
+            res = svc.events().insert(
+                calendarId=calendar_id, body=desired, sendUpdates=send_updates
+            ).execute()
+            inserted += 1
+            print(f"Inserted {desired_view.get("summary")} {desired_view.get("start")} ");
+            results.append({"event_key": event_key, "status": "inserted", "htmlLink": res.get("htmlLink")})
         else:
-            # Compare → PATCH only when changed
-            patch = _diff_for_patch(current_view, desired_view)
+            patch = _diff_for_patch(_norm_event_view(current,tzid), desired_view)
             if patch:
-                res = svc.events().patch(calendarId=calendar_id, eventId=event_id, body=patch, sendUpdates=send_updates).execute()
+                res = svc.events().patch(
+                    calendarId=calendar_id, eventId=current["id"], body=patch, sendUpdates=send_updates
+                ).execute()
                 patched += 1
-                results.append({"event_id": event_id, "status": "patched", "htmlLink": res.get("htmlLink")})
+                print(f"Patched {desired_view.get("summary")} {desired_view.get("start")} ");
+                results.append({"event_key": event_key, "status": "patched", "htmlLink": res.get("htmlLink")})
             else:
                 unchanged += 1
-                results.append({"event_id": event_id, "status": "unchanged", "htmlLink": None})
+                results.append({"event_key": event_key, "status": "unchanged"})
 
-    # ---- Delete pass (orphans = previously-synced events not in current feed)
+    # Delete orphans: anything we previously synced (source=checkfront-sync)
+    # but whose event_key is NOT present in the current feed
     if delete_orphans:
-        active_ids = {eid for (eid, _) in slots}
-        for existing_id in existing_map.keys():
-            if existing_id not in active_ids:
-                svc.events().delete(calendarId=calendar_id, eventId=existing_id, sendUpdates=send_updates).execute()
+        existing_sorted = sorted(
+            existing.items(),
+            key=lambda kv: (_start_of_event(kv[1]), kv[0])  # (event_key, event)
+        )
+
+        for k, ev in existing_sorted:
+            if k not in active_keys:
+                svc.events().delete(
+                    calendarId=calendar_id, eventId=ev["id"], sendUpdates=send_updates
+                ).execute()
+                print(f"Deleted {ev.get("summary")} {ev.get("start")} ");
                 deleted += 1
-                results.append({"event_id": existing_id, "status": "deleted", "htmlLink": None})
+                results.append({"event_key": k, "status": "deleted"})
 
     return {
         "calendar_id": calendar_id,
@@ -241,6 +343,21 @@ def sync_calendar(
         "deleted": deleted,
         "results": results,
     }
+
+
+
+def eid(key: str, maxlen: int = 50) -> str:
+    # Deterministic base32 id, always safe
+    digest = hashlib.sha1(key.encode("utf-8")).digest()
+    return base64.b32encode(digest).decode("utf-8").lower().strip("=")[:maxlen]
+
+def make_event_id_from_sku_start(sku: str, start_iso: str) -> str:
+    # If you really want readable ids, sanitize aggressively and prefix with 'e'
+    readable = f"{(sku or 'nosku').lower()}_{start_iso.replace(':','_')}"
+    readable = SAFE_RE.sub("-", readable)
+    if len(readable) < 5 or readable[0] in "-_":
+        readable = "e-" + readable  # ensure good first char & min length
+    return readable[:50]
 
 
 def _diff_for_patch(current_view: dict, desired_view: dict) -> dict:
@@ -304,7 +421,7 @@ def rrule_weekly(by_day: list[str], interval: int = 1, count: int | None = None,
         parts.append(f"UNTIL={until}")
     return "RRULE:" + ";".join(parts)
 
-def _norm_event_view(e: dict) -> dict:
+def _norm_event_view(e: dict, tzid :str) -> dict:
     """Project an event into just the fields we manage, normalised."""
     if not e: 
         return {}
@@ -314,12 +431,12 @@ def _norm_event_view(e: dict) -> dict:
         "location": e.get("location") or None,
         "colorId": e.get("colorId") or None,
         "start": {
-            "dateTime": (e.get("start") or {}).get("dateTime"),
-            "timeZone": (e.get("start") or {}).get("timeZone"),
+            "dateTime": (e.get("start") or {}), #.get("dateTime")
+            "timeZone": tzid,
         },
         "end": {
-            "dateTime": (e.get("end") or {}).get("dateTime"),
-            "timeZone": (e.get("end") or {}).get("timeZone"),
+            "dateTime": (e.get("end") or {}),
+            "timeZone": tzid,
         },
         "reminders": e.get("reminders") or None,
         "extendedProperties": {"private": (e.get("extendedProperties") or {}).get("private") or {}},
@@ -330,8 +447,8 @@ def _norm_event_view(e: dict) -> dict:
         v["attendees"] = [{"email": a} for a in addrs] if addrs else None
     return v
 
-def _norm_body_view(b: dict) -> dict:
+def _norm_body_view(b: dict, tzid) -> dict:
     """Same projection but for the body we’re about to send."""
-    return _norm_event_view(b)
+    return _norm_event_view(b, tzid)
 
 
