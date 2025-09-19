@@ -88,6 +88,80 @@ def event_body_from_cf(
         body["description"] = description
     return body
 
+from datetime import datetime
+from typing import Dict, List, Tuple, Any
+
+# Assumes you have a fetch that pulls ONLY events you manage (e.g. source=checkfront-sync)
+# and within the time window:
+# fetch_existing_managed(svc, calendar_id, time_min, time_max) -> List[dict]
+
+#def _updated(ev: dict) -> datetime:
+#    # RFC3339 -> datetime
+#   return datetime.fromisoformat(ev.get("updated"))
+
+def _start(ev: dict) -> datetime:
+    return ev.get("start")
+
+def _event_key(ev: dict) -> str | None:
+    return ((ev.get("extendedProperties") or {}).get("private") or {}).get("event_key")
+
+def clean_and_bucket_existing(
+    svc,
+    calendar_id: str,
+    time_min: datetime,
+    time_max: datetime,
+    tzid: str,
+    send_updates: str = "none",
+) -> Tuple[Dict[str, dict], Dict[str, int], List[Dict[str, Any]]]:
+    """
+    - Deletes events with no extendedProperties.private.event_key
+    - For duplicate keys: keeps one survivor, deletes others
+    Returns: (existing_map, stats, results)
+      existing_map: {event_key: survivor_event}
+      stats: {"deleted_no_key": int, "deleted_duplicates": int}
+      results: list of action logs
+    """
+    # 1) Fetch events we manage (e.g., with privateExtendedProperty="source=checkfront-sync")
+    existing_list: List[dict] = fetch_existing_synced_events(svc, calendar_id, time_min, time_max, tzid)
+
+
+    deleted_no_key = 0
+    deleted_dupes = 0
+    results: List[Dict[str, Any]] = []
+
+    # 2) First pass: delete events with NO event_key
+    keyed_events: List[dict] = []
+    for ev in existing_list.values():
+        k = _event_key(ev)
+        if not k:
+            # delete & log
+            ev_id = ev.get("id")
+            if ev_id:
+                svc.events().delete(calendarId=calendar_id, eventId=ev_id, sendUpdates=send_updates).execute()
+                deleted_no_key += 1
+                results.append({"status": "deleted_no_key", "event_id": ev_id})
+            continue
+        keyed_events.append(ev)
+
+    # 3) Group remaining events by key
+    buckets: Dict[str, List[dict]] = {}
+    for ev in keyed_events:
+        k = _event_key(ev)  # guaranteed non-empty now
+        buckets.setdefault(k, []).append(ev)
+
+    # 4) Choose one survivor per key (earliest start) and delete the others
+    existing_map: Dict[str, dict] = {}
+    for k, evs in buckets.items():
+        survivor = evs[0]   # keep the earliest start event
+        existing_map[k] = survivor
+
+        for ev in (e for e in evs if e is not survivor and e.get("id")):
+            svc.events().delete(calendarId=calendar_id, eventId=ev["id"], sendUpdates=send_updates).execute()
+            deleted_dupes += 1
+            results.append({"status": "deleted_duplicate", "event_key": k, "event_id": ev["id"]})
+
+    stats = {"deleted_no_key": deleted_no_key, "deleted_duplicates": deleted_dupes}
+    return existing_map, stats, results
 
 
 def exdate_list(*, start_dt: datetime, until_dt: datetime, byday: int, have_dates: set) -> List[str]:
@@ -196,6 +270,19 @@ def sync_calendar(
 
     # --- sort filtered bookings deterministically ---
     filtered_bookings.sort(key=lambda kv: (_start_of_body(kv[1]), kv[0]))
+    
+
+
+    existing, clean_stats, clean_logs = clean_and_bucket_existing(
+        svc=svc,
+        calendar_id=calendar_id,
+        time_min=time_min,
+        time_max=time_max,
+        tzid = tzid,
+        send_updates=send_updates,
+    )
+
+
     
     # Map existing events we manage by their event_key
     existing = fetch_existing_by_key(svc, calendar_id, time_min, time_max)

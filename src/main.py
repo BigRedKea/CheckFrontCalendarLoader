@@ -43,11 +43,10 @@ def run_middle_layer():
 
     # Choose start + days
     start_date = date.today().isoformat()
-    #days = 356
         # --- Get slots from Checkfront ---
     tz = timezone(timedelta(hours=10))  # AEST (adjust if needed)
     start_date = "2025-09-07"           # example, set dynamically
-    days = 14                            # how many days ahead
+    days = 365                            # how many days ahead
 
     # Call the builder
     slots = extract_checkfront_data(
@@ -76,13 +75,13 @@ def run_middle_layer():
     svc = get_calendar_service(sa_path)
 
     # --- Push to calendars ---
-    results = push_slots_to_calendars(svc, cfg, slots, tz)
+    results = push_slots_to_calendars(svc, cfg, slots, tz, days)
 
     print(f" Finished ")
 
 
 
-def push_slots_to_calendars(svc, cfg: Dict, slots: List[Dict], tz) -> List[Dict]:
+def push_slots_to_calendars(svc, cfg: Dict, slots: List[Dict], tz ,days) -> List[Dict]:
     """Push all slots to calendars using calendar-centric config."""
     results: List[Dict] = []
 
@@ -97,7 +96,7 @@ def push_slots_to_calendars(svc, cfg: Dict, slots: List[Dict], tz) -> List[Dict]
     # Time window for sync
     tz = timezone(timedelta(hours=10))        # or from cfg["timezone"]
     tmin = datetime.now(tz) - timedelta(days=1)
-    tmax = datetime.now(tz) + timedelta(days=365)
+    tmax = datetime.now(tz) + timedelta(days=days)
     tzid = cfg["TIMEZONE"]
 
 
@@ -115,6 +114,7 @@ def push_slots_to_calendars(svc, cfg: Dict, slots: List[Dict], tz) -> List[Dict]
             continue
 
         bookings_for_cal = slots_to_calendar_events_for(cal_id, slots_for_cal, cfg, tz)
+        print(f"Updating {cal.get("name")}")
 
         summary = sync_calendar(
             svc=svc,

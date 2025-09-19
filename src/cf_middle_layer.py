@@ -389,7 +389,7 @@ def extract_checkfront_data(
                         start=occurance_start,
                         end=occurance_end,
                         item= item,
-                        event_id = f"{slot.get('sku')}_{_to_datetime(slot.get("start")).strftime("%Y_%m_%d_%H_%M")}"
+                        event_id = f"{slot.sku}_{_to_datetime(slot.start).strftime("%Y_%m_%d_%H_%M")}"
                     )
                 slot = buckets[key]
 

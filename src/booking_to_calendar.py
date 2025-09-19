@@ -63,14 +63,14 @@ def slots_to_calendar_events_for(
             booked  = int(slot.get("total_booked") or 0)
             unlimited = bool(slot.get("unlimited"))
             capacity  = None if unlimited else (int(total) if total is not None else None)
-            if capacity is None:
-                color_id = None
-            elif booked <= 0:
+
+            if booked <= 0:
                 color_id = "2"   # green
-            elif booked >= capacity:
+            elif not unlimited and booked >= capacity:
                 color_id = "11"  # red
             else:
-                color_id = "6"   # orange
+                color_id = "5"   # banana
+                #color_id = "6"   # orange
 
             # build description
             description = (
