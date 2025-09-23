@@ -9,6 +9,11 @@ def _datetime_or_none(v, tz) -> datetime:
     except Exception:
         return None
     
+def _to_dt(v) -> Optional[datetime]:
+    if isinstance(v, datetime): return v
+    if isinstance(v, str) and v: return datetime.fromisoformat(v)
+    return None
+    
 def _flatten_tags(tags: List[Dict] | List[str]) -> List[str]:
     """
     Accept [{'name':'Cub'}, ...] or ['Cub', ...] → ['Cub', ...]

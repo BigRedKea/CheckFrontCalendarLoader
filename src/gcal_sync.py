@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 
-from .helpers import _to_datetime, _safe_sku
+from .helpers import  _safe_sku, _to_datetime
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 

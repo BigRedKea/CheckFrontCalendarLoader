@@ -1,9 +1,10 @@
 from typing import Dict, List, Tuple
 from datetime import datetime
 from .gcal_sync import push_calendarevent_by_tags
+from .helpers import _to_datetime
 #from .cf_middle_layer import SlotAggregate
 #from .gcal_client import sync_calendar
-from .helpers import _to_datetime
+
 import json
 
 from datetime import datetime, timedelta, timezone

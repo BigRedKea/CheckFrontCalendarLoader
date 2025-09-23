@@ -4,7 +4,9 @@
 from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
-from .adapters import _to_datetime
+
+from src.calendarevent import ExtractWindow
+from .helpers import _to_datetime
 
 import os
 import re, hashlib, base64
@@ -108,9 +110,7 @@ def _event_key(ev: dict) -> str | None:
 def clean_and_bucket_existing(
     svc,
     calendar_id: str,
-    time_min: datetime,
-    time_max: datetime,
-    tzid: str,
+    extract_window: ExtractWindow,
     send_updates: str = "none",
 ) -> Tuple[Dict[str, dict], Dict[str, int], List[Dict[str, Any]]]:
     """
@@ -122,7 +122,7 @@ def clean_and_bucket_existing(
       results: list of action logs
     """
     # 1) Fetch events we manage (e.g., with privateExtendedProperty="source=checkfront-sync")
-    existing_list: List[dict] = fetch_existing_synced_events(svc, calendar_id, time_min, time_max, tzid)
+    existing_list: List[dict] = fetch_existing_synced_events(svc, calendar_id, extract_window)
 
 
     deleted_no_key = 0
@@ -180,15 +180,15 @@ def exdate_list(*, start_dt: datetime, until_dt: datetime, byday: int, have_date
         cur += timedelta(days=7)
     return out
 
-def fetch_existing_synced_events(svc, calendar_id: str, time_min: datetime, time_max: datetime, tzid) -> Dict[str, dict]:
+def fetch_existing_synced_events(svc, calendar_id: str, extract_window: ExtractWindow) -> Dict[str, dict]:
     """Return {eventId: normalized_event} for events we own (source=checkfront-sync) in [time_min, time_max]."""
     events_by_id: Dict[str, dict] = {}
     page_token = None
     while True:
         req = svc.events().list(
             calendarId=calendar_id,
-            timeMin=time_min.isoformat(),
-            timeMax=time_max.isoformat(),
+            timeMin=extract_window.window_start.isoformat(),
+            timeMax=extract_window.window_end.isoformat(),
             privateExtendedProperty="source=checkfront-sync",
             singleEvents=True,
             showDeleted=False,
@@ -197,7 +197,7 @@ def fetch_existing_synced_events(svc, calendar_id: str, time_min: datetime, time
         )
         resp = req.execute()
         for ev in resp.get("items", []):
-            events_by_id[ev["id"]] = _norm_event_view(ev, tzid)
+            events_by_id[ev["id"]] = _norm_event_view(ev, extract_window.tz)
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
@@ -245,16 +245,11 @@ def _start_of_event(ev: dict) -> datetime:
 
 def sync_calendar(
     svc,
-    cfg,
     calendar_id: str,
     bookings_for_cal: list[tuple[str, dict]],  # [(event_key, desired_body)], desired_body includes extendedProperties.private.event_key
-    time_min,
-    time_max,
-    tzid,
+    extract_window: ExtractWindow,
     send_updates: str = "none",
-    delete_orphans: bool = True,
-
-):
+    delete_orphans: bool = True):
     
     filtered_bookings: List[Tuple[str, dict]] = []
     for key, body in bookings_for_cal:
@@ -265,27 +260,24 @@ def sync_calendar(
         start = datetime.fromisoformat(start_dt)
         end   = datetime.fromisoformat(end_dt)
         # keep if event overlaps [time_min, time_max]
-        if end >= time_min and start <= time_max:
+        if end >= extract_window.window_start and start <= extract_window.window_end:
             filtered_bookings.append((key, body))
 
     # --- sort filtered bookings deterministically ---
     filtered_bookings.sort(key=lambda kv: (_start_of_body(kv[1]), kv[0]))
     
 
-
     existing, clean_stats, clean_logs = clean_and_bucket_existing(
         svc=svc,
         calendar_id=calendar_id,
-        time_min=time_min,
-        time_max=time_max,
-        tzid = tzid,
-        send_updates=send_updates,
+        extract_window = extract_window,
+        send_updates=send_updates
     )
 
 
     
     # Map existing events we manage by their event_key
-    existing = fetch_existing_by_key(svc, calendar_id, time_min, time_max)
+    existing = fetch_existing_by_key(svc, calendar_id, extract_window.window_start, extract_window.window_end)
 
     inserted = patched = unchanged = deleted = 0
     results = []
@@ -295,7 +287,7 @@ def sync_calendar(
     for event_key, desired in filtered_bookings:
         active_keys.add(event_key)
         current = existing.get(event_key)
-        desired_view = _norm_body_view(desired, tzid)
+        desired_view = _norm_body_view(desired, extract_window.tz)
 
         if current is None:
             # INSERT (no custom 'id'; rely on event_key in extendedProperties)
@@ -306,7 +298,7 @@ def sync_calendar(
             print(f"Inserted {desired_view.get("summary")} {desired_view.get("start")} ");
             results.append({"event_key": event_key, "status": "inserted", "htmlLink": res.get("htmlLink")})
         else:
-            patch = _diff_for_patch(_norm_event_view(current,tzid), desired_view)
+            patch = _diff_for_patch(_norm_event_view(current, extract_window.tz), desired_view)
             if patch:
                 res = svc.events().patch(
                     calendarId=calendar_id, eventId=current["id"], body=patch, sendUpdates=send_updates
@@ -391,36 +383,6 @@ def _diff_for_patch(current_view: dict, desired_view: dict) -> dict:
     return {k: v for k, v in patch.items() if v is not None}
 
 
-def rrule_weekly(by_day: list[str], interval: int = 1, count: int | None = None, until: str | None = None) -> str:
-    """
-    Build a simple weekly RRULE.
-
-    Parameters
-    ----------
-    by_day : list[str]
-        Days of the week in iCal two-letter format: 
-        ["MO","TU","WE","TH","FR","SA","SU"]
-    interval : int
-        Every N weeks (default 1 = every week).
-    count : int | None
-        Total number of recurrences. Mutually exclusive with `until`.
-    until : str | None
-        End date/time in UTC as YYYYMMDD or YYYYMMDDT000000Z.
-
-    Returns
-    -------
-    str
-        e.g. 'RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR'
-    """
-    parts = [f"FREQ=WEEKLY", f"INTERVAL={interval}"]
-    if by_day:
-        parts.append("BYDAY=" + ",".join(by_day))
-    if count:
-        parts.append(f"COUNT={count}")
-    elif until:
-        parts.append(f"UNTIL={until}")
-    return "RRULE:" + ";".join(parts)
-
 def _norm_event_view(e: dict, tzid :str) -> dict:
     """Project an event into just the fields we manage, normalised."""
     if not e: 
@@ -430,14 +392,16 @@ def _norm_event_view(e: dict, tzid :str) -> dict:
         "description": (e.get("description") or "").rstrip(),
         "location": e.get("location") or None,
         "colorId": e.get("colorId") or None,
-        "start": {
-            "dateTime": (e.get("start") or {}), #.get("dateTime")
-            "timeZone": tzid,
-        },
-        "end": {
-            "dateTime": (e.get("end") or {}),
-            "timeZone": tzid,
-        },
+        # "start": {
+        #     "dateTime": (e.get("start") or {}), #.get("dateTime")
+        #     "timeZone": tzid,
+        # },
+        # "end": {
+        #     "dateTime": (e.get("end") or {}),
+        #     "timeZone": tzid,
+        # },
+        "start": e.get("start"),
+        "end": e.get("end"),
         "reminders": e.get("reminders") or None,
         "extendedProperties": {"private": (e.get("extendedProperties") or {}).get("private") or {}},
         "attendees": None,

@@ -1,13 +1,14 @@
 from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
-import hashlib
-import base64
 from typing import List, Dict
+from zoneinfo import ZoneInfo
 
-def _to_dt(v) -> Optional[datetime]:
-    if isinstance(v, datetime): return v
-    if isinstance(v, str) and v: return datetime.fromisoformat(v)
-    return None
+from src.calendarevent import CalendarEvent
+from src.helpers import _to_dt
+
+DEFAULT_TZ = "Australia/Brisbane"
+
+
 
 def _find_calendar_def(cfg: dict, calendar_id: str) -> dict:
     for cal in cfg.get("calendars", []):
@@ -15,9 +16,9 @@ def _find_calendar_def(cfg: dict, calendar_id: str) -> dict:
             return cal
     return {}
 
-def slots_to_calendar_events_for(
+def calendarevents_to_googlecalendar(
     calendar_id: str,
-    slots: List[Dict[str, Any]],
+    calendarEvents: list[CalendarEvent],
     cfg: Dict,
     tz,
 ) -> List[Tuple[str, Dict]]:
@@ -25,75 +26,58 @@ def slots_to_calendar_events_for(
     Convert flat slot dicts to (event_id, desired_body) tuples for one calendar,
     always including a stable 'event_key' in extendedProperties.private.
     """
-    calendarevents: List[Tuple[str, Dict]] = []
-    tzid = cfg.get("timezone") or "Australia/Brisbane"
+    googleCalendarEvents: List[Tuple[str, Dict]] = []
+    tzid = tz #cfg.get("timezone") or "Australia/Brisbane"
     defaults = cfg.get("event_defaults", {})
     cal_def = _find_calendar_def(cfg, calendar_id)
 
     cal_attendees = cal_def.get("attendees")
 
-    for slot in slots:
-        
-        try:
-            
+    for calendarEvent in calendarEvents:
+
+       # try:
+
             # only push slots whose tags map to this calendar
-            tag_names = list(slot.get("tags") or [])
-
-            item= slot.get("item")
-
-            start_dt = _to_dt(slot["start"])
-            sku      = slot.get("sku") or ""
-            event_key = eid_readable(sku, start_dt)  # or eid_from_sku_datetime(sku, start_dt)
-            #event_id  = eid(event_key)   
-
-            cal_ids = resolve_calendars_for_tags(tag_names, cfg)
+            cal_ids = resolve_calendars_for_tags(calendarEvent.tags, cfg)
             if calendar_id not in cal_ids:
                 continue
 
-            # start/end times
-            start_dt = _to_dt(slot.get("start"))
-            end_dt   = _to_dt(slot.get("end"))
-            if not (start_dt and end_dt):
-                raise ValueError(f"Missing start/end for slot {slot.get('code')} on {slot.get('date')}")
-
-            # e.g. base32 hash safe for Google IDs
+            if not (calendarEvent.startdatetime and calendarEvent.enddatetime):
+                raise ValueError(f"Missing start/end for calendarEvent")
 
             # colour by availability
-            total   = slot.get("total_places")
-            booked  = int(slot.get("total_booked") or 0)
-            unlimited = bool(slot.get("unlimited"))
-            capacity  = None if unlimited else (int(total) if total is not None else None)
+            total   = calendarEvent.total_places
+            booked  = calendarEvent.total_booked()
+            capacity  = None if calendarEvent.unlimited else (int(total) if total is not None else None)
 
             if booked <= 0:
                 color_id = "2"   # green
-            elif not unlimited and booked >= capacity:
+            elif not calendarEvent.unlimited and booked >= capacity:
                 color_id = "11"  # red
             else:
                 color_id = "5"   # banana
                 #color_id = "6"   # orange
 
             # build description
-            description = (
-                slot.get("description")
-                or f"available {('∞' if unlimited else capacity - booked)} = total {total} - booked {booked}"
-            )
+            if calendarEvent.unlimited:
+                description = ( f"∞ available - booked {booked}")
+            else:
+                description = ( f"available {(capacity - booked)} = total {total} - booked {booked}")
 
             private_props = {
                 "source": "checkfront-sync",
-                "booking_code": str(slot.get("code")),
-                "event_key": event_key,
-                "date": slot.get("date"),
-                "sku": slot.get("sku"),
-                "tags": ",".join(tag_names),
+                "event_key": calendarEvent.calendar_event_id,
+                "sku": calendarEvent.sku,
+                "tags": ",".join(calendarEvent.tags),
                 "booked": str(booked),
                 "capacity": "" if capacity is None else str(capacity),
             }
 
             body = {
-                "summary": slot.get("title") or (slot.get("item") or {}).get("name") or slot.get("sku") or "Booking",
+                "summary": (calendarEvent.checkfrontitem.get("name") or calendarEvent.get("sku")),
                 "description": description,
-                "start": {"dateTime": start_dt.isoformat(), "timeZone": tzid},
-                "end":   {"dateTime": end_dt.isoformat(),   "timeZone": tzid},
+                "start": _to_gcal_time(calendarEvent.startdatetime),
+                "end":   _to_gcal_time(calendarEvent.enddatetime),
                 "extendedProperties": {"private": private_props},   # <-- ensures key is present
             }
 
@@ -103,30 +87,43 @@ def slots_to_calendar_events_for(
                 body["colorId"] = color_id
             if defaults.get("reminders"):
                 body["reminders"] = defaults["reminders"]
-            if slot.get("location"):
-                body["location"] = slot.get("location")
+            # if calendarEvent.get("location"):
+            #     body["location"] = calendarEvent.get("location")
 
-            calendarevents.append((event_key, body))
+            googleCalendarEvents.append((calendarEvent.calendar_event_id, body))
 
-        except Exception as e:
+       # except Exception as e:
             # Handle any other unspecific exception
-            print(f"An unexpected error occurred: {slot.get("sku")} {e}")
+       #     print(f"An unexpected error occurred: {calendarEvent.sku} {e}")
 
-    return calendarevents
+    return googleCalendarEvents
 
 
-def eid_readable(sku: str, start: datetime) -> str:
-    """
-    Return a human-readable event id like 'sku123_2025_09_07_08_00'.
-    (Must still be at least 5 chars and only use [a-z0-9_-].)
-    """
-    safe_sku = (sku or "nosku").lower().replace(" ", "_")
-    return f"{safe_sku}_{start.strftime('%Y_%m_%d_%H_%M')}"
+def _to_gcal_time(dt: datetime) -> dict:
+    """GCal expects {'dateTime': ..., 'timeZone': ...} for timed events."""
+    if dt.tzinfo is None:
+        tz = DEFAULT_TZ
+        dt = dt.replace(tzinfo=ZoneInfo(tz))
+    else:
+        # ZoneInfo('Australia/Brisbane').key gives the Olson name
+        tz = getattr(dt.tzinfo, "key", DEFAULT_TZ)
+    return {"dateTime": _rfc3339(dt), "timeZone": tz}
 
-def eid(key: str, maxlen: int = 50) -> str:
-    # Deterministic base32 id, always safe
-    digest = hashlib.sha1(key.encode("utf-8")).digest()
-    return base64.b32encode(digest).decode("utf-8").lower().strip("=")[:maxlen]
+
+def _rfc3339(dt: datetime) -> str:
+    """Return RFC3339 string, ensuring it’s timezone-aware."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
+    return dt.isoformat(timespec="seconds")  # e.g. 2025-09-21T08:00:00+10:00
+
+# def eid_readable(sku: str, start: datetime) -> str:
+#     """
+#     Return a human-readable event id like 'sku123_2025_09_07_08_00'.
+#     (Must still be at least 5 chars and only use [a-z0-9_-].)
+#     """
+#     safe_sku = (sku or "nosku").lower().replace(" ", "_")
+#     return f"{safe_sku}_{start.strftime('%Y_%m_%d_%H_%M')}"
+
 
 def resolve_calendars_for_tags(tag_names: List[str], cfg: Dict) -> List[str]:
     """
@@ -143,9 +140,13 @@ def resolve_calendars_for_tags(tag_names: List[str], cfg: Dict) -> List[str]:
       "default_calendar_id": "primary"   # optional fallback
     }
     """
-    wanted = {t.lower() for t in (tag_names or [])}
-    matches: List[str] = []
 
+    matches: List[str] = []
+    if not tag_names:
+        return matches
+
+    wanted = {t.lower() for t in (tag_names or [])}
+    
     for cal in cfg.get("calendars", []):
         cal_tags = {t.lower() for t in cal.get("tags", [])}
         if wanted & cal_tags:                      # any overlap
