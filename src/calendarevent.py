@@ -55,7 +55,7 @@ class CalendarEvent:
 
     def total_booked(self) -> int:
         """Total quantity booked for this single event."""
-        return sum(bi.get("quantity", 0) for bi in self.booking_items)
+        return sum(bi.get("qty", 0) for bi in self.booking_items)
 
         # def _event_duration(ev: Dict, tz: ZoneInfo) -> timedelta:
 #     """Duration = base end - base start (fall back to 3h)."""
