@@ -8,19 +8,18 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-#from .cf_sync import CFConfig
-
 from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 
+from .calendarevent import CalendarEvent, ExtractWindow
+
 from .cf_client import CFConfig, CheckfrontClient
 from .cf_middle_layer import extract_checkfront_data
-from .gcal_sync import get_calendar_service
-from .gcal_client import sync_calendar
-from .adapters import  filter_slots_for_calendar
-from .calendarevent import CalendarEvent, ExtractWindow
- 
+
 from .booking_to_calendar import calendarevents_to_googlecalendar, resolve_calendars_for_tags
+
+from .gcal_client import GCalClient
+
 
 def build_cli():
     p = argparse.ArgumentParser(description="Sync Checkfront bookings to Google Calendar")
@@ -60,46 +59,31 @@ def run_middle_layer():
     #    config = json.load(f)
 
     # --- Auth ---
-    sa_path = config.get("SA_JSON_PATH")
-    if not sa_path:
-        raise RuntimeError("Please set SA_JSON_PATH to your service account JSON file")
-    calendar_service = get_calendar_service(sa_path)
 
-    # --- Push to calendars ---
-    results = push_calendarevents_to_calendars(calendar_service, config, calendarEvents, extract_window)
-
-    print(f" Finished ")
-
-
-
-def push_calendarevents_to_calendars(svc, 
-                                     cfg: Dict, 
-                                     calendarEvents: List[CalendarEvent], 
-                                     extract_window: ExtractWindow) -> List[Dict]:
     """Push all slots to calendars using calendar-centric config."""
-    results: List[Dict] = []
-
-    # Time window for sync
-    #tz = timezone(timedelta(hours=10))        # or from cfg["timezone"]
-
-    for cal in cfg.get("calendars"):
-
-        #slots_for_calendar = filter_slots_for_calendar(slots, cal, cfg)
-        
+    for cal in config.get("calendars"):
+       
         cal_id = cal["calendarid"]
 
         eventsforCalendar = [
             calendarEvent for calendarEvent in calendarEvents
-            if cal_id in resolve_calendars_for_tags(calendarEvent.tags, cfg)
+            if cal_id in resolve_calendars_for_tags(calendarEvent.tags, config)
         ]
         if not eventsforCalendar:
             continue
 
-        bookings_for_cal = calendarevents_to_googlecalendar(cal_id, eventsforCalendar, cfg, extract_window.tz)
+        sa_path = config.get("SA_JSON_PATH")
+        if not sa_path:
+            raise RuntimeError("Please set SA_JSON_PATH to your service account JSON file")
+        calendar_service = GCalClient(sa_path, calendar_id=cal_id)
+
+        # --- Push to calendars ---
+        #results = push_calendarevents_to_calendars(calendar_service, config, calendarEvents, extract_window)
+
+        bookings_for_cal = calendarevents_to_googlecalendar(cal_id, eventsforCalendar, config, extract_window.tz)
         print(f"Updating {cal.get("name")}")
 
-        summary = sync_calendar(
-            svc=svc,
+        summary = calendar_service.sync_calendar(
             calendar_id=cal_id,
             bookings_for_cal=bookings_for_cal,
             extract_window = extract_window,
@@ -109,6 +93,8 @@ def push_calendarevents_to_calendars(svc,
 
         print(f"{cal['name']}: +{summary['inserted']} ~{summary['patched']} = "
             f"{summary['unchanged']} -{summary['deleted']}")
+        
+    print(f" Finished ")
 
 
 if __name__ == "__main__":

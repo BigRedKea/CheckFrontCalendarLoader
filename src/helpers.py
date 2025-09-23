@@ -14,17 +14,17 @@ def _to_dt(v) -> Optional[datetime]:
     if isinstance(v, str) and v: return datetime.fromisoformat(v)
     return None
     
-def _flatten_tags(tags: List[Dict] | List[str]) -> List[str]:
-    """
-    Accept [{'name':'Cub'}, ...] or ['Cub', ...] → ['Cub', ...]
-    """
-    out: List[str] = []
-    for t in tags or []:
-        if isinstance(t, dict) and isinstance(t.get("name"), str):
-            out.append(t["name"].strip())
-        elif isinstance(t, str):
-            out.append(t.strip())
-    return out
+# def _flatten_tags(tags: List[Dict] | List[str]) -> List[str]:
+#     """
+#     Accept [{'name':'Cub'}, ...] or ['Cub', ...] → ['Cub', ...]
+#     """
+#     out: List[str] = []
+#     for t in tags or []:
+#         if isinstance(t, dict) and isinstance(t.get("name"), str):
+#             out.append(t["name"].strip())
+#         elif isinstance(t, str):
+#             out.append(t.strip())
+#     return out
     
 _ALLOWED_ID = re.compile(r'^[A-Za-z0-9_-]{5,1024}$')  # for sanity checks only
 _ALLOWED_TAG_CHARS = re.compile(r'[^A-Za-z0-9_-]')  

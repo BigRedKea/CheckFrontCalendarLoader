@@ -27,7 +27,6 @@ def calendarevents_to_googlecalendar(
     always including a stable 'event_key' in extendedProperties.private.
     """
     googleCalendarEvents: List[Tuple[str, Dict]] = []
-    tzid = tz #cfg.get("timezone") or "Australia/Brisbane"
     defaults = cfg.get("event_defaults", {})
     cal_def = _find_calendar_def(cfg, calendar_id)
 
@@ -115,14 +114,6 @@ def _rfc3339(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
     return dt.isoformat(timespec="seconds")  # e.g. 2025-09-21T08:00:00+10:00
-
-# def eid_readable(sku: str, start: datetime) -> str:
-#     """
-#     Return a human-readable event id like 'sku123_2025_09_07_08_00'.
-#     (Must still be at least 5 chars and only use [a-z0-9_-].)
-#     """
-#     safe_sku = (sku or "nosku").lower().replace(" ", "_")
-#     return f"{safe_sku}_{start.strftime('%Y_%m_%d_%H_%M')}"
 
 
 def resolve_calendars_for_tags(tag_names: List[str], cfg: Dict) -> List[str]:
