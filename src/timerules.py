@@ -12,7 +12,7 @@ class TimeRules:
         
         #category = (calendarEvent.item.get("category") or "").strip()
         #calendarEvent.sku
-
+        #print (f"{sku}, {category}")
         
         # SKU override wins if present (exact, case-insensitive)
         if sku:
@@ -28,7 +28,7 @@ class TimeRules:
         else:
             return None
 
-    def apply_time_rule(self, rule, start, end):
+    def _apply_time_rule(self, rule, sku, start, end):
 
         if not rule:
             return start, end  # no change if nothing matches
@@ -44,5 +44,6 @@ class TimeRules:
             # If a same-day rule accidentally crosses midnight, normalize
             if end <= start:
                 end += timedelta(days=1)
+        #print (f"{sku}, {start}, {end}")
 
         return start,end

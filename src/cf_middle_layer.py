@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime,  timedelta
 from typing import Dict, List
 
 import json
@@ -8,7 +7,7 @@ import json
 from src.timerules import TimeRules
 
 from .cf_client import CheckfrontClient
-from .calendarevent import CalendarEvent, ExtractWindow
+from .calendarevent import CalendarEvent, ExtractWindow, get_calendar_event_id
 
 with open("config.json", "r") as f:
     CONFIG = json.load(f)
@@ -43,25 +42,21 @@ def extract_checkfront_data(
 
         rule = timerulescalculator._get_rule_for(category, sku)
 
-        (bookingitem_start_datetime, bookingitem_end_datetime) = timerulescalculator.apply_time_rule(rule, bookingitem.get("start"), bookingitem.get("end"))
+        (bookingitem_start_datetime, bookingitem_end_datetime) = timerulescalculator._apply_time_rule(rule, sku, bookingitem.get("start"), bookingitem.get("end"))
 
         if not sku or bookingitem_start_datetime is None or bookingitem_end_datetime is None:
             continue
 
-        key = (sku, bookingitem_start_datetime)
+        key = get_calendar_event_id(sku, bookingitem_start_datetime)
 
-        sku_events = {d: ev for (s, d), ev in calendarevents.items() if s == sku}
-
-        # check date
-        if not sku_events:
-            print(f"Warning No calendar events defined for SKU '{sku}' ")
    
-        if sku_events and key not in calendarevents:
+        if key not in calendarevents:
             print (f"Warning No calendar event defined for {key}")
 
         if key not in calendarevents:
             items_by_sku = checkfrontClient.items_by_sku()
             item_meta = items_by_sku[sku]
+            print(f"Adding -C- {key}")
             calendarevents[key] = CalendarEvent(
                     checkfrontitem=item_meta,
                     checkfrontitemevent=None,
