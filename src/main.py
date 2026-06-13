@@ -4,14 +4,12 @@
 from __future__ import annotations
 import argparse
 
+#from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+#from zoneinfo import ZoneInfo
 
-from datetime import datetime, date, timezone, timedelta
-from zoneinfo import ZoneInfo
-
-from .calendarevent import CalendarEvent, ExtractWindow
+from .calendarevent import ExtractWindow
 
 from .cf_client import CFConfig, CheckfrontClient
 from .cf_middle_layer import extract_checkfront_data
@@ -34,7 +32,20 @@ def run_middle_layer():
 
     # Load Config
     config = json.loads(Path("config.json").read_text(encoding="utf-8"))
-    tz = ZoneInfo(config.get("TIMEZONE"))
+    #tz = ZoneInfo(config.get("TIMEZONE"))
+
+    #import sys
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(config.get("TIMEZONE"))
+    except:
+        # Fallback to pytz if zoneinfo's database is missing on Windows
+        import pip
+        pip.main(['install', 'tzdata'])
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(config.get("TIMEZONE"))
+
+
     checkfrontpath = config.get("Checkfront_Path")
 
     extract_window = ExtractWindow(tz, 365)
@@ -83,16 +94,39 @@ def run_middle_layer():
         bookings_for_cal = calendarevents_to_googlecalendar(cal_id, eventsforCalendar, config, extract_window.tz)
         print(f"Updating {cal.get("name")}")
 
-        summary = calendar_service.sync_calendar(
-            calendar_id=cal_id,
-            bookings_for_cal=bookings_for_cal,
-            extract_window = extract_window,
-            send_updates="none",
-            delete_orphans=True
-        )
+        resp = calendar_service.service.events().list(calendarId=cal_id,                 
+                                                    timeMin=extract_window.window_start.isoformat(),
+                                                    timeMax=extract_window.window_end.isoformat(),
+                                                    maxResults=3000).execute()
+        items = resp.get("items", [])
 
-        print(f"{cal['name']}: +{summary['inserted']} ~{summary['patched']} = "
-            f"{summary['unchanged']} -{summary['deleted']}")
+        if False: #(cal.get("name")== "accomodation calendar"):
+            calendar_service.delete_all_events(
+                calendar_id = cal_id,
+                window_start = extract_window.window_start, 
+                window_end = extract_window.window_end)
+
+        else:
+            deleted = calendar_service.delete_duplicate_events(
+            cal_id,
+            items,
+            key_func=lambda e: (
+                e.get("extendedProperties", {})
+                .get("private", {})
+                .get("event_key")
+            ), )
+            print(f"Deleted {len(deleted)} duplicate events")
+
+            summary = calendar_service.sync_calendar(
+                calendar_id=cal_id,
+                bookings_for_cal=bookings_for_cal,
+                extract_window = extract_window,
+                send_updates="none",
+                delete_orphans=True
+            )
+
+            print(f"{cal['name']}: +{summary['inserted']} ~{summary['patched']} = "
+                f"{summary['unchanged']} -{summary['deleted']}")
         
     print(f" Finished ")
 

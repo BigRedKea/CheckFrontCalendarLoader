@@ -33,8 +33,8 @@ def calendarevents_to_googlecalendar(
     cal_attendees = cal_def.get("attendees")
 
     for calendarEvent in calendarEvents:
-
-       # try:
+            
+        try:
 
             # only push slots whose tags map to this calendar
             cal_ids = resolve_calendars_for_tags(calendarEvent.tags, cfg)
@@ -51,11 +51,15 @@ def calendarevents_to_googlecalendar(
 
             if booked <= 0:
                 color_id = "2"   # green
+                emoji = "🪫 "
             elif not calendarEvent.unlimited and booked >= capacity:
                 color_id = "11"  # red
+                emoji = "🔋 "
             else:
                 color_id = "5"   # banana
+                emoji = "🟨"
                 #color_id = "6"   # orange
+
 
             # build description
             if calendarEvent.unlimited:
@@ -73,7 +77,7 @@ def calendarevents_to_googlecalendar(
             }
 
             body = {
-                "summary": (calendarEvent.checkfrontitem.get("name") or calendarEvent.get("sku")),
+                "summary": '[' + emoji + str(booked) + '] ' + (calendarEvent.checkfrontitem.get("name") or calendarEvent.get("sku")),
                 "description": description,
                 "start": _to_gcal_time(calendarEvent.startdatetime),
                 "end":   _to_gcal_time(calendarEvent.enddatetime),
@@ -91,9 +95,9 @@ def calendarevents_to_googlecalendar(
 
             googleCalendarEvents.append((calendarEvent.calendar_event_id, body))
 
-       # except Exception as e:
+        except Exception as e:
             # Handle any other unspecific exception
-       #     print(f"An unexpected error occurred: {calendarEvent.sku} {e}")
+            print(f"An unexpected error occurred: {calendarEvent.sku} {e}")
 
     return googleCalendarEvents
 

@@ -42,7 +42,7 @@ class CalendarEvent:
         self.sku = checkfrontitem.get("sku")
         self.total_places = checkfrontitem.get("stock")
         self.total_places=int(self.total_places) if self.total_places is not None else None
-        self.calendar_event_id = f"{self.sku}_{_to_datetime(self.startdatetime).strftime("%Y_%m_%d_%H_%M")}"
+        self.calendar_event_id = get_calendar_event_id(self.sku, self.startdatetime)
         self.tags: list[str] = [t["name"] for t in checkfrontitem.get("tags") if "name" in t]
         self.checkfrontitem = checkfrontitem
 
@@ -56,6 +56,10 @@ class CalendarEvent:
     def total_booked(self) -> int:
         """Total quantity booked for this single event."""
         return sum(bi.get("qty", 0) for bi in self.booking_items)
+    
+
+def get_calendar_event_id(sku: str, startdatetime: datetime):
+    return f"{sku}_{_to_datetime(startdatetime).strftime("%Y_%m_%d_%H_%M")}"
 
         # def _event_duration(ev: Dict, tz: ZoneInfo) -> timedelta:
 #     """Duration = base end - base start (fall back to 3h)."""

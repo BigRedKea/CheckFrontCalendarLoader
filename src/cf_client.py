@@ -15,7 +15,7 @@ from functools import lru_cache
 
 import requests
 from pathlib import Path
-from src.calendarevent import CalendarEvent, ExtractWindow
+from src.calendarevent import CalendarEvent, ExtractWindow, get_calendar_event_id
 from src.helpers import _datetime_or_none, _normalize_value
 
 from datetime import datetime
@@ -223,6 +223,8 @@ class CheckfrontClient:
         unavail_by_category: Dict[str, List[Tuple[datetime, datetime]]] = {}
 
         for u in unavailable_events:
+
+
             u_start_s = _datetime_or_none(u.get("start_date"),extract_window.tz)
             u_end_s = _datetime_or_none(u.get("end_date"),extract_window.tz)
             u_end_s =u_end_s.replace(hour=23, minute=59, second=59, microsecond=9999)
@@ -291,12 +293,14 @@ class CheckfrontClient:
                         continue
 
                     
-                    (startdatetime, enddatetime) = timerulescalculator.apply_time_rule(timerule, s, e )
+                    (startdatetime, enddatetime) = timerulescalculator._apply_time_rule(timerule, sku, s, e )
 
 
-                    key = (sku, startdatetime)
+                    key = get_calendar_event_id(sku, startdatetime)
+                    
 
                     if key not in calendarEvents:
+                        print(f"Adding -A- {key}")
                         calendarEvents[key] = CalendarEvent(
                             checkfrontitem = item,
                             checkfrontitemevent = available_event,
@@ -314,6 +318,8 @@ class CheckfrontClient:
                 if item ==None:
                     continue # May be an archived Item
 
+                itemcategory = item.get("category")
+                sku = item.get("sku")
                 occs = self._item_occurrences(item, extract_window)
                 
                 notavailableitem = unavail_by_item.get(applies_to_item_id, [])
@@ -326,12 +332,13 @@ class CheckfrontClient:
                         continue
 
                     rule = timerulescalculator._get_rule_for(itemcategory,sku)
-                    (startdatetime, enddatetime) = timerulescalculator.apply_time_rule(rule, s, e )
+                    (startdatetime, enddatetime) = timerulescalculator._apply_time_rule(rule, sku, s, e )
 
-                    sku = item.get("sku")
-                    key = (sku, startdatetime)
+                    
+                    key = get_calendar_event_id(sku, startdatetime)
 
                     if key not in calendarEvents:
+                        print(f"Adding -B- {key}")
                         calendarEvents[key] = CalendarEvent(
                             checkfrontitem= item,
                             checkfrontitemevent = available_event,
@@ -504,6 +511,9 @@ class CheckfrontClient:
                     continue
                 if item.get("status_id") == "VOID":
                     continue
+                if item.get("status_id") == "STOP":
+                    continue
+                
 
                 sku = (item.get("sku") or "").strip()
                 try:

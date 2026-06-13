@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 import re, hashlib, base64
+from collections import defaultdict
+from typing import Callable
 
 from src.calendarevent import ExtractWindow
 
@@ -127,7 +129,7 @@ class GCalClient:
                 filtered_bookings.append((key, body))
 
         # --- sort filtered bookings deterministically ---
-        filtered_bookings.sort(key=lambda kv: (_start_of_body(kv[1]), kv[0]))
+        filtered_bookings.sort(key=lambda kv: (_start_of_event(kv[1]), kv[0]))
         
         # Map existing events we manage by their event_key
         existing = self.fetch_existing_by_key(calendar_id, extract_window.window_start, extract_window.window_end)
@@ -148,17 +150,15 @@ class GCalClient:
                     calendarId=calendar_id, body=desired, sendUpdates=send_updates
                 ).execute()
                 inserted += 1
-                print(f"Inserted {desired_view.get("summary")} {desired_view.get("start")} ");
+                print(f"Inserted {event_key} ");
                 results.append({"event_key": event_key, "status": "inserted", "htmlLink": res.get("htmlLink")})
             else:
-
-
 
                 patch = _diff_for_patch(_norm_event_view(current), desired_view)
 
 
                 if patch:
-                    if (True):
+                    if (False):
                         res = self.service.events().update(
                             calendarId=calendar_id,
                             eventId=current["id"],
@@ -168,11 +168,15 @@ class GCalClient:
                         print(f"updated {desired_view.get("summary")} {desired_view.get("start")} ")
                         results.append({"event_key": event_key, "status": "updated", "htmlLink": res.get("htmlLink")})
                     else:
-                        res = self.service.events().patch(
-                            calendarId=calendar_id, eventId=current["id"], body=patch, sendUpdates=send_updates
-                        ).execute()
-                        print(f"Patched {desired_view.get("summary")} {desired_view.get("start")} ")
-                        results.append({"event_key": event_key, "status": "patched", "htmlLink": res.get("htmlLink")})
+                        try:
+                            res = self.service.events().patch(
+                                calendarId=calendar_id, eventId=current["id"], body=patch, sendUpdates=send_updates
+                            ).execute()
+                            print(f"Patched {desired_view.get("summary")} {desired_view.get("start")} ")
+                            results.append({"event_key": event_key, "status": "patched", "htmlLink": res.get("htmlLink")})
+                        except Exception as e: # Catching a general exception as a fallback
+                            print(f"An unexpected error occurred: {e}")
+
                     patched += 1
                     
                 else:
@@ -204,6 +208,66 @@ class GCalClient:
             "deleted": deleted,
             "results": results,
         }
+    
+    def delete_duplicate_events(self,
+        calendar_id: str,
+        events: list[dict],
+        key_func: Callable[[dict], str],) -> list[str]:
+        """
+        Delete duplicate events in a list based on key_func(event).
+        Keeps the most recently updated event per key.
+
+        Returns a list of deleted event IDs.
+        """
+        buckets: dict[str, list[dict]] = defaultdict(list)
+        for ev in events:
+            k = key_func(ev)
+            if k:
+                buckets[k].append(ev)
+
+        deleted_ids: list[str] = []
+
+        for k, evs in buckets.items():
+            if len(evs) > 1:
+                # Keep the one with the latest 'updated' timestamp
+                evs.sort(key=lambda e: e.get("updated", ""))
+                survivor = evs[-1]
+                for ev in evs[:-1]:
+                    self.service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
+                    deleted_ids.append(ev["id"])
+
+        return deleted_ids
+    
+    def delete_all_events(self,
+        calendar_id: str,
+        window_start:datetime, 
+        window_end:datetime):
+        """
+        Delete duplicate events in a list based on key_func(event).
+        Keeps the most recently updated event per key.
+
+        Returns a list of deleted event IDs.
+        """
+        page_token = None
+        while True:
+            resp = self.service.events().list(
+                calendarId=calendar_id,
+                timeMin= window_start.isoformat(),
+                timeMax= window_end.isoformat(),
+                singleEvents=True,
+                showDeleted=False,
+                maxResults=2500,
+                fields="items(id),nextPageToken",
+                pageToken=page_token
+            ).execute()
+
+            for e in resp.get("items", []):
+                self.service.events().delete(calendarId=calendar_id, eventId=e["id"]).execute()
+                print(f"Deleted {e.get("id")}")
+
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
 
 
 
@@ -227,8 +291,8 @@ def exdate_list(*, start_dt: datetime, until_dt: datetime, byday: int, have_date
 # --- Auth ---
 
 
-def _start_of_body(body: dict) -> datetime:
-    return datetime.fromisoformat(body["start"]["dateTime"])
+# def _start_of_body(body: dict) -> datetime:
+#     return datetime.fromisoformat(body["start"]["dateTime"])
 
 def _start_of_event(ev: dict) -> datetime:
     return datetime.fromisoformat(ev["start"]["dateTime"])
@@ -279,6 +343,9 @@ def _diff_for_patch(current_view: dict, desired_view: dict) -> dict:
     return diff
 
 
+
+
+
 def _norm_event_view(e: dict) -> dict:
     """Project an event into just the fields we manage, normalised."""
     if not e: 
@@ -298,9 +365,5 @@ def _norm_event_view(e: dict) -> dict:
         addrs = sorted({(a.get("email") or "").lower() for a in e["attendees"] if a.get("email")})
         v["attendees"] = [{"email": a} for a in addrs] if addrs else None
     return v
-
-# def _norm_body_view(b: dict) -> dict:
-#     """Same projection but for the body we’re about to send."""
-#     return _norm_event_view(b)
 
 
